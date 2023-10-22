@@ -271,7 +271,7 @@ globalVar = unsafePerformIO $ newIORef (initState)
 
 {-# NOINLINE globalErrHandle #-}
 globalErrHandle :: ErrorHandle
-globalErrHandle = unsafePerformIO $ initErrorHandle
+globalErrHandle = unsafePerformIO $ initErrorHandle False
 
 -------------------
 

@@ -285,7 +285,7 @@ main = do
 
 hmain :: [String] -> IO ()
 hmain argv = do
-          errh <- initErrorHandle
+          errh <- initErrorHandle False
           bluespecdir <- getEnvDef "BLUESPECDIR" dfltBluespecDir
           -- parse command line arguments
           let (opts, args, emsgs) = parseOpts argv bluespecdir

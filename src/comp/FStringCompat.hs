@@ -2,7 +2,7 @@
 module FStringCompat(FString, getFString,
                      tmpFString, cloneFString, concatFString,
                      mkNumFString, mkStrFString, mkFString,
-                     filterFString
+                     filterFString, toString, fromString
                     ) where
 
 -- wrapper to make SStrings look like FStrings

@@ -33,7 +33,7 @@ import Util(fromJustOrErr, fromMaybeM,
 
 -- the contents of the .bo package
 type BinFile a = ( String       -- filename
-                 , CSignature   -- signature of user-visible defs)
+                 , CSignature   -- signature of user-visible defs
                  , CSignature   -- signature of all defs
                  , IPackage a   -- the package
                  , String       -- hash

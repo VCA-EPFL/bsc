@@ -85,6 +85,7 @@ data Type = TVar TyVar         -- ^ type variable
           | TDefMonad Position -- ^ not used after CVParserImperative
     deriving (Show, Generic.Data, Generic.Typeable)
 
+
 -- | Representation of a type variable
 data TyVar = TyVar { tv_name :: Id    -- ^ name of the type variable
                    , tv_num  :: Int   -- ^ number for a generated type variable

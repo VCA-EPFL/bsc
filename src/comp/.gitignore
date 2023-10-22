@@ -10,6 +10,8 @@ rts_hooks*.o
 
 # Ignore the generated executables
 bsc
+bsc_lsp
+test_lsp
 bluetcl
 bluewish
 dumpbo
@@ -19,6 +21,8 @@ bsv2bsc
 showrules
 vcdcheck
 
+# Ignore the yaml for hie
+hie.yaml
 # Ignore TAGS files
 TAGS
 tags

@@ -1,0 +1,35 @@
+# An example yaml file
+bscExtraArgs: 
+  # One line per argument, *no space* in the arguments
+  - "-D"
+  - "IMPORT_HOSTIF"
+  - "-D"
+  - "XILINX_SYS_CLK"
+  - "-D"
+  - "XILINX_INT_MUL_LATENCY=1"   
+  - "-D"
+  - "MMIO"
+  - "-D"                         
+  - "DEBUG_STATS"
+  - "-D"
+  - "L2SC"
+  - "-D"
+  - "VCUDDRDELAY"
+bscUserDirs:
+  # Those are all relative to the workspace
+  - "src/"
+  - "src/include"
+  - "src/types"
+  - "src/core"  
+  - "src/widemem"
+  - "src/frontend"
+  - "src/backend"
+  - "src/MulDiv"
+  - "src/DDR4" 
+  - "src/DDR4/xilinx_ddr4_v2_2"
+  - "src/DDR4/sim"
+  - "src/DDR4/bsvlib"
+  - "connectal/bsv"
+  # One should be able to use absolute paths too
+  - "/opt/fancyBSVLib/"
+

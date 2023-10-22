@@ -1,10 +1,15 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE TypeSynonymInstances, FlexibleInstances #-}
+{-# LANGUAGE TypeSynonymInstances, FlexibleInstances, DeriveDataTypeable #-}
 {-# OPTIONS_GHC -Werror -fwarn-incomplete-patterns #-}
 -- This is used to guarantee that getErrorText covers all the cases
 -- Note that the OPTIONS line must be first !!!!
 
 module Error(
+             prEMsg, serror, swarning,
+             extractPosition,
+             extractMessage,
+             ExcepWarnErr(..),
+             ErrorState(..),
              -- internal errors
              internalError,
 
@@ -75,6 +80,7 @@ import Control.Monad.Except(ExceptT, runExceptT)
 import qualified Control.Exception as CE
 import Data.IORef
 import System.IO.Unsafe(unsafePerformIO)
+import Data.Typeable
 
 
 -- -------------------------
@@ -147,7 +153,9 @@ data ErrorState = ErrorState
           -- we also store state that needs handling on exit:
 
           -- set of open handles, that need to be flushed/closed on exit
-          openHandles :: [Handle]
+          openHandles :: [Handle],
+          -- LSP or compiler
+          lspMode :: Bool
 
         }
 
@@ -168,14 +176,15 @@ memberMsgSet s (SomeMsgs msg_set) = S.member s msg_set
 newtype ErrorHandle = ErrorHandle (IORef ErrorState)
 
 -- takes the Flag values as arguments
-initErrorHandle :: IO ErrorHandle
-initErrorHandle = do
+initErrorHandle :: Bool -> IO ErrorHandle
+initErrorHandle lspMode = do
   let init_state = ErrorState {
                      promotionSet = SomeMsgs S.empty,
                      demotionSet = SomeMsgs S.empty,
                      suppressionSet = SomeMsgs S.empty,
                      suppressedCount = 0,
-                     openHandles = []
+                     openHandles = [],
+                     lspMode = lspMode
                    }
   ref <- newIORef init_state
   return (ErrorHandle ref)
@@ -220,6 +229,10 @@ bsWarningsAndErrors :: ErrorHandle -> [EMsg] -> [EMsg] -> [EMsg] -> IO ()
 bsWarningsAndErrors ref ws ds es =
     bsWarningsAndErrorsWithContext ref emptyContext ws ds es
 
+data ExcepWarnErr = ExcepWarnErr [EMsg] [WMsg] MsgContext deriving (Show, Typeable)
+instance CE.Exception ExcepWarnErr 
+
+-- [T]: This is the place we need to modify to communicate to the LSP server
 bsWarningsAndErrorsWithContext :: ErrorHandle -> MsgContext ->
                                   [EMsg] -> [EMsg] -> [EMsg] -> IO ()
 bsWarningsAndErrorsWithContext ref ctx [] [] [] = do
@@ -241,18 +254,24 @@ bsWarningsAndErrorsWithContext ref ctx ws ds es = do
   writeErrorState ref state2
   let final_warns = warn_ws ++ warn_ds
       final_errs = err_ws ++ err_ds ++ es
+  if lspMode state2 then do
+    -- handle <- openFile "/tmp/reached.txt" AppendMode
+    -- hPutStr handle $ "Error raised " ++ (show final_warns) ++ show (final_errs) 
+    -- hClose handle
+    CE.throw $ ExcepWarnErr final_errs final_warns ctx
+  else do
   -- issue warnings
-  when (not (null final_warns)) $ do
-      -- the show*List function will sort the messages
-      -- XXX should we indicate which are demoted errors?
-      hPutStr stderr (showWarningListWithContext ctx final_warns)
-  -- issue errors
-  when (not (null final_errs)) $ do
-      doPreExitActions ref
-      -- use exceptions, so that bluetcl can handle the error
-      -- the show*List function will sort the messages
-      -- XXX should we indicate which are promoted warnings?
-      CE.throw $ CE.ErrorCall (showErrorListWithContext ctx final_errs)
+    when (not (null final_warns)) $ do
+        -- the show*List function will sort the messages
+        -- XXX should we indicate which are demoted errors?
+        hPutStr stderr (showWarningListWithContext ctx final_warns)
+    -- issue errors
+    when (not (null final_errs)) $ do
+          doPreExitActions ref
+        -- use exceptions, so that bluetcl can handle the error
+        -- the show*List function will sort the messages
+        -- XXX should we indicate which are promoted warnings?
+          CE.throw $ CE.ErrorCall (showErrorListWithContext ctx final_errs)
 
 handleDemotableErrors :: ErrorState -> MsgContext -> [EMsg] ->
                          (ErrorState, [WMsg], [EMsg])
@@ -436,6 +455,12 @@ type MsgContext = Doc
 
 type EMsg = (Position, ErrMsg)
 type WMsg = EMsg
+
+extractPosition :: EMsg -> Position
+extractPosition ((x,y)::EMsg) = x
+
+extractMessage :: EMsg ->ErrMsg 
+extractMessage ((x,y)::EMsg) = y
 
 data ErrMsg =
         -- Lexer/parser error messages

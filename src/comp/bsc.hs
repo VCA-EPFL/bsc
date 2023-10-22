@@ -196,7 +196,7 @@ hmain args = do
                 putStrLnF (showFlags flags)
           when (printFlagsRaw flags) $ putStrLnF (showFlagsRaw flags)
     let (warnings, decoded) = decodeArgs (baseName pprog) args' cdir
-    errh <- initErrorHandle
+    errh <- initErrorHandle False
     let doWarnings = when ((not . null) warnings) $ bsWarning errh warnings
         setFlags = setErrorHandleFlags errh
     case decoded of
@@ -315,7 +315,6 @@ compileFile errh flags binmap hashmap name_orig = do
     _ <- dumpStr errh flags t DFcpp dumpnames file
 
     -- ===== the break point between file manipulation and compilation
-
     -- We don't start and dump this stage because that is handled inside
     -- the "parseSrc" function (since BSV parsing has multiple stages)
     (pkg@(CPackage i _ _ _ _ _), t)

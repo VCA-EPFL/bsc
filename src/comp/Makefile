@@ -140,6 +140,13 @@ PACKAGES = \
 	-package syb \
 	-package integer-gmp \
 	-package text \
+	-package lsp \
+	-package lsp-test \
+	-package lsp-types \
+	-package lens \
+	-package aeson \
+	-package text-format \
+	-package yaml\
 	$(GHCEXTRAPKGS)
 
 # GHC can compile either a single file (use GHCCOMPILEFLAGS) or
@@ -232,7 +239,7 @@ SOURCES_WO_EXTRA_BUILDVERSION = \
 
 SOURCES = BuildVersion.hs BuildSystem.hs $(SOURCES_WO_EXTRA_BUILDVERSION)
 
-BSCEXES = bsc
+BSCEXES = bsc bsc_lsp test_lsp
 TCLEXES = bluetcl
 UTILEXES = bsc2bsv bsv2bsc dumpbo dumpba vcdcheck
 SHOWRULESEXES = showrules
@@ -299,6 +306,21 @@ bsc: $(SOURCES)
 		$(BUILDFLAGS) $(RTSFLAGS) $(BSC_BUILDLIBS)
 	$(POSTBUILDCOMMAND)
 
+.PHONY: bsc_lsp
+bsc_lsp: $(SOURCES)
+        # Maybe read the updated build stuff
+	$(PREBUILDCOMMAND)
+	$(BUILDCOMMAND) -main-is Main_$@ \
+		$(BUILDFLAGS) $(RTSFLAGS) $(BSC_BUILDLIBS)
+	$(POSTBUILDCOMMAND)
+
+.PHONY: test_lsp
+test_lsp: $(SOURCES)
+        # Maybe read the updated build stuff
+	$(PREBUILDCOMMAND)
+	$(BUILDCOMMAND) -main-is main \
+		$(BUILDFLAGS) $(RTSFLAGS) $(BSC_BUILDLIBS)
+	$(POSTBUILDCOMMAND)
 .PHONY: bsc2bsv
 bsc2bsv: $(SOURCES)
 	$(PREBUILDCOMMAND)
@@ -353,7 +375,7 @@ bluetcl: bluetcl.hs bluetcl_Main.hsc $(SOURCES)
 # Install targets
 
 .PHONY: install
-install: $(BSCEXES) $(TCLEXES) install-bsc install-bluetcl
+install: $(BSCEXES) $(TCLEXES) install-bsc install-bluetcl 
 
 .PHONY: install-extra
 install-extra: $(UTILEXES) $(SHOWRULESEXES) install-utils install-showrules

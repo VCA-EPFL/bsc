@@ -13,7 +13,7 @@ import qualified Data.ByteString.Lazy as B
 
 main :: IO ()
 main = do
-    errh <- initErrorHandle
+    errh <- initErrorHandle False
     as <- getArgs
     (isBI, fname) <- case as of
                        ["-bi", mi]             -> return (True, mi)

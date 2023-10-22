@@ -2,6 +2,7 @@ module Literal(Literal(..)) where
 import IntLit
 import PPrint
 import PVPrint
+import Data.Generics qualified as DataGenerics
 
 data Literal
         = LString String
@@ -9,7 +10,7 @@ data Literal
         | LInt IntLit
         | LReal Double
         | LPosition -- a position literal is a placeholder for the position in CLiteral
-        deriving (Eq, Ord, Show)
+        deriving (Eq, Ord, Show,  DataGenerics.Data, DataGenerics.Typeable)
 
 
 instance PPrint Literal where
