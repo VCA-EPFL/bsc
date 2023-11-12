@@ -8,10 +8,10 @@ module Main_bsc_lsp(main, hmain) where
 -- Haskell libs
 import Prelude
 import System.Environment(getProgName)
-import System.Process (readProcessWithExitCode)
-import System.Exit(ExitCode(ExitSuccess))
 import System.FilePath(takeBaseName)
 import CType
+import ISyntax(IPackage(..))
+import Error
 import System.IO
     ( openFile,
       IOMode(AppendMode),
@@ -26,24 +26,25 @@ import System.IO
 import System.Directory
     ( removeFile,
       getCurrentDirectory,
-      doesFileExist,
       createDirectoryIfMissing )
 import Data.Maybe(isJust, fromJust, fromMaybe)
 
 import PreStrings(fsEmpty)
-import Control.Monad(when)
+import Control.Monad(when, foldM)
 import qualified Data.Map as M
 
+import Util(fromJustOrErr)
 
 -- utility libs
 import ParseOp
 -- import PFPrint
-import FileNameUtil(baseName, hasDotSuf, dropSuf,
+import FileNameUtil(baseName, hasDotSuf, dropSuf, binSuffix,
                     bscSrcSuffix, bseSrcSuffix,
                     createEncodedFullFilePath)
 import TopUtils
 import IOUtil(getEnvDef)
-
+-- import ISyntax(IPackage(..), IModule(..),
+--                IEFace(..), IDef(..), IExpr(..), fdVars)
 -- compiler libs
 import FStringCompat
 import Flags(
@@ -55,10 +56,10 @@ import FlagsDecode(
         decodeArgs,
         showFlags,
         showFlagsRaw)
-import Error(ErrorHandle, ExcepWarnErr(..),
-             prEMsg, swarning, serror,
-             initErrorHandle, setErrorHandleFlags,
-             extractPosition,  bsWarning)
+-- import Error(ErrorHandle, ExcepWarnErr(..),
+--              prEMsg, swarning, serror,
+--              initErrorHandle, setErrorHandleFlags,
+--              extractPosition,  bsWarning)
 import Position(Position (..),
         getPositionLine,
         getPositionFile,
@@ -68,6 +69,7 @@ import Deriving(derive)
 import MakeSymTab(mkSymTab, cConvInst)
 import TypeCheck(cCtxReduceIO, cTypeCheck)
 import BinUtil(BinMap, HashMap, readImports)
+import GenBin(genBinFile)
 import GenWrap(genWrap)
 import GenFuncWrap(genFuncWrap, addFuncWrap)
 import IExpandUtils(HeapData)
@@ -98,11 +100,15 @@ import Control.Monad qualified as Monad
 import PPrint qualified as P
 import GHC.Generics (Generic)
 -- import qualified PFPrint as Pp
-import Data.Aeson.Types (parse)
 import Data.Generics qualified as DataGenerics
 import Data.Yaml qualified as Yaml
 import Data.Either qualified as Either
 import CSyntax
+import GenSign(genUserSign, genEverythingSign)
+import Control.Monad.Except (MonadError(catchError))
+import Control.Exception (SomeException, try)
+
+
 -- Current limitations: 
 --  - Errors are at the line level (no multiline errors, no end of column error).
 --  - bsc_lsp is singlethreaded
@@ -117,7 +123,7 @@ import CSyntax
 
 
 deriving instance DataGenerics.Data CTypeclass
-deriving instance DataGenerics.Data CPred 
+deriving instance DataGenerics.Data CPred
 deriving instance DataGenerics.Data PartialKind
 deriving instance DataGenerics.Data CQType
 deriving instance DataGenerics.Data CDefn
@@ -140,7 +146,7 @@ deriving instance DataGenerics.Data CPat
 deriving instance DataGenerics.Data CPOp
 
 deriving instance DataGenerics.Typeable CTypeclass
-deriving instance DataGenerics.Typeable CPred 
+deriving instance DataGenerics.Typeable CPred
 deriving instance DataGenerics.Typeable PartialKind
 deriving instance DataGenerics.Typeable CQType
 deriving instance DataGenerics.Typeable CDefn
@@ -163,7 +169,7 @@ deriving instance DataGenerics.Typeable CPat
 deriving instance DataGenerics.Typeable CPOp
 
 definedNames :: CDefn -> [Id]
-definedNames x = either (const  []) (\x -> [x]) $ getName x
+definedNames x = either (const  []) (: []) $ getName x
 
 getPreviousPosFromParsedPackage :: Id -> CPackage -> [Id]
 getPreviousPosFromParsedPackage pos (CPackage _ _ _ _ defns _) =
@@ -222,7 +228,7 @@ pruneLocalCDefn pos cdefn =
        []
 
 
-data Config = Config {bscExe :: FilePath, projectFile :: FilePath }
+data Config = Config {projectFile :: FilePath }
     deriving (Generic, J.ToJSON, J.FromJSON, Show)
 
 data ProjectConfig = ProjectConfig { bscExtraArgs :: [String], bscUserDirs :: [String]}
@@ -237,7 +243,7 @@ pathBsvLibs cfg = Monad.join . L.intersperse ":" $ bscUserDirs cfg ++ ["+"]
 -- Every options passed to Bluespec except the filename, and [-u] in the case
 -- where we compile recursively
 commandOptions :: ProjectConfig -> Config -> String -> [String]
-commandOptions pcfg cfg builddir = ["--aggressive-conditions"] ++ bscExtraArgs pcfg ++ ["-p", pathBsvLibs pcfg, "-bdir", builddir]
+commandOptions pcfg cfg builddir = ["--aggressive-conditions"] ++ bscExtraArgs pcfg ++ ["-p", pathBsvLibs pcfg, "-bdir", builddir ++ "/"]
 
 logForClient :: MonadLsp config f => T.Text -> f ()
 logForClient x = sendNotification LSP.SMethod_WindowLogMessage $ LSP.LogMessageParams LSP.MessageType_Log x
@@ -258,8 +264,6 @@ diagFromExcep (ExcepWarnErr err warn ctxt) = do
                                     (Just LSP.DiagnosticSeverity_Error)
                                     Nothing Nothing Nothing
                                     (T.pack . P.pretty 78 78 . prEMsg serror ctxt $ x)
-                                    -- TODO remove following lines
-                                    -- (T.pack (show $ extractMessage x))
                                     Nothing Nothing Nothing ) err
         diagw =  map (\x -> let pos = extractPosition x  in
                         LSP.Diagnostic (LSP.mkRange (fromIntegral $ pos_line pos - 1) 0
@@ -271,8 +275,18 @@ diagFromExcep (ExcepWarnErr err warn ctxt) = do
                                     Nothing Nothing Nothing) warn
     (diag, diagw, Nothing, Nothing)
 
-emptyDiags :: (Bool, c, p, p) -> ([LSP.Diagnostic], [LSP.Diagnostic], Maybe c, Maybe p)
-emptyDiags (_,map, packagetc, package) = ([],[], Just map, Just package)
+emptyDiags :: (Bool, (BinMap HeapData), p, p, ErrorHandle) -> IO ([LSP.Diagnostic], [LSP.Diagnostic], Maybe (BinMap HeapData), Maybe p)
+emptyDiags (_, binmap, packagetc, package,ref) = do
+    finalWarns <- lspFinalWarns <$> readErrorState ref
+    ctxt <- lspContext <$> readErrorState ref
+    let diagw = map (\x -> let pos = extractPosition x  in
+                        LSP.Diagnostic (LSP.mkRange (fromIntegral $ pos_line pos - 1) 0
+                                                    (fromIntegral $ pos_line pos - 1) 1000)
+                                    (Just LSP.DiagnosticSeverity_Warning)
+                                    Nothing Nothing Nothing
+                                    (T.pack . P.pretty 78 78 . prEMsg swarning ctxt $ x)
+                                    Nothing Nothing Nothing) finalWarns
+    return ([], diagw, Just binmap, Just package)
 
 withFilePathFromUri :: MonadLsp config f => LSP.Uri -> (FilePath -> f ()) -> f ()
 withFilePathFromUri uri k =
@@ -290,14 +304,10 @@ updateNametable doc maybepackage cpackage =
                         let defs_public_aux = L.map (\(x,y,z,t,u) -> y) $ M.elems m
                             defs_public = L.concatMap (\(CSignature _namePackage _imported _fixity defs) ->
                                                         L.concatMap
-                                                            -- (\x -> definedNames x ++ getIdStructs x)
                                                             definedNames
                                                             defs) defs_public_aux
                             fulldefs_local = (\(CPackage _ _ _ _ defns _) -> L.concatMap definedNames defns) c
-                            -- fulldefs_local_pos = (\(CPackage _ _ _ _ defns _) -> collectPositionsCDefn  <$> defns) c
                             all_defs = fulldefs_local ++ defs_public -- Might contain duplicate
-                            -- pos_defs =  (\l -> (minimum l, maximum l)) <$> fmap getPositionLine <$> fulldefs_local_pos
-                        -- logForClient . T.pack $  show $ pos_defs
                         liftIO . modifyMVar_ stRef $ \x ->
                                                     return $ x{visible_global_identifiers = M.insert
                                                                     doc all_defs (visible_global_identifiers x),
@@ -375,24 +385,12 @@ processPaths root pcfg = pcfg{ bscUserDirs = appendRelative $ bscUserDirs pcfg }
     where
         appendRelative [] = []
         appendRelative (t:q) =
-            if length t == 0 
-                then appendRelative q 
+            if length t == 0
+                then appendRelative q
                 else
                     if head t == '/'
                         then t : appendRelative q
                         else (root ++ "/" ++ t) : appendRelative q
-
-boDangerousInPath :: ProjectConfig -> FilePath -> FilePath -> FilePath -> IO Bool
-boDangerousInPath pcfg bluespecDir workspace file =
-    nobodyHasFile $ bluespecDir : bscUserDirs (processPaths workspace pcfg) 
-    where 
-        nobodyHasFile [] = return True
-        nobodyHasFile (t:q) = do
-            exists <- doesFileExist (t ++"/" ++ file)
-            if exists then 
-                return False 
-            else 
-                nobodyHasFile q
 
 handlers :: Handlers LspState
 handlers =
@@ -429,35 +427,12 @@ handlers =
         cfg <- getConfig
         workspace <- getWorkspace
         withFilePathFromUri doc (\file -> do
-            -- logForClient . toStrict $ format  "Open File {} " (Only file)
-
-            -- First we call the fullblown compiler recursively, to get the [.bo]
-            -- files of the submodules and then
-
+            logForClient . toStrict $ format  "Open File {} " (Only file)
             stRef <- lift ask
             pcfg <- liftIO $ projectConfig <$> readMVar stRef
-
-            logForClient . toStrict $ format  "Command {} " (Only ( show (commandOptions pcfg cfg workspace ++ [ "-u", file ])))
-            (errCode, stdout', stderr') <- liftIO $ readProcessWithExitCode (bscExe cfg) (commandOptions pcfg cfg workspace ++ [ "-u", file ]) ""
-            logForClient . toStrict $ format  "Success {} " (Only (show $ errCode == ExitSuccess))
-            -- TODO BUG: If compile stuff for which we have both BO and SOURCES
-            -- -> Dangerous as we get 2 BO files, which trigger a warning and
-            -- LSP becomes stuck. 
-            -- "Solution:" If a bo file exist outside of the [bdir], delete the
-            -- version in bdir as soon as it is created (Probably better/more
-            -- robust)
-            bdir <- liftIO $ bDir <$> readMVar stRef
-            dangerous <- liftIO $  boDangerousInPath pcfg bdir workspace (takeBaseName file ++ ".bo") 
-            when (errCode == ExitSuccess && dangerous) $ 
-                liftIO $ removeFile (workspace ++ "/" ++ takeBaseName file ++ ".bo")
-            -- Independently of the success of the previous step (technically we
-            -- could skip it if the previous step was successful) we call the
-            -- frontend of the compiler in the current file (it compiles up to
-            -- typechecking), in case where an error is found (parsing,
-            -- importing submodules, typechecking, etc...), an exception is
-            -- raised by the compiler.  We catch this exception here  and we
-            -- display it as diagnostic
-            (diagErrs, diagWarns, maybeNameTable, maybePackage) <- liftIO $ catchException (emptyDiags <$> hmain (commandOptions pcfg cfg workspace ++ [file])  (T.unpack content)) $
+            -- We first delete the BO because we will regenerate it if possible
+            _ <- liftIO (try (removeFile (workspace ++"/" ++ takeBaseName file ++ ".bo")) :: IO (Either SomeException ()))
+            (diagErrs, diagWarns, maybeNameTable, maybePackage) <- liftIO $ catchException (hmain (commandOptions pcfg cfg workspace ++ [file])  (T.unpack content) True >>= emptyDiags) $
                                                 return . diagFromExcep
             diagsForClient doc $ diagErrs ++ diagWarns
             updateNametable doc maybeNameTable maybePackage)
@@ -471,7 +446,7 @@ handlers =
                 Just vf@(VFS.VirtualFile _ version rope) -> do
                     stRef <- lift ask
                     pcfg <- liftIO $ projectConfig <$> readMVar stRef
-                    (diagErrs, diagWarns, maybeNameTable, maybePackage) <- liftIO $ catchException (emptyDiags <$> hmain (commandOptions pcfg cfg workspace ++ [file])  (T.unpack (VFS.virtualFileText vf))) $
+                    (diagErrs, diagWarns, maybeNameTable, maybePackage) <- liftIO $ catchException (hmain (commandOptions pcfg cfg workspace ++ [file])  (T.unpack (VFS.virtualFileText vf)) False >>= emptyDiags) $
                                                 return . diagFromExcep
                     diagsForClient doc (diagErrs ++ diagWarns)
                     updateNametable doc maybeNameTable maybePackage
@@ -486,15 +461,8 @@ handlers =
               Just vf@(VFS.VirtualFile _ version _rope) -> do
                 stRef <- lift ask
                 pcfg <- liftIO $ projectConfig <$> readMVar stRef
-                (errCode, stdout', stderr') <- liftIO $ readProcessWithExitCode (bscExe cfg) (commandOptions pcfg cfg workspace ++ [file]) ""
-                -- Delete stale BO file as the new source is broken 
-                when (errCode /= ExitSuccess) . liftIO $ removeFile (workspace ++"/" ++ takeBaseName file ++ ".bo")
-                -- Make sure we don't create a BO file in the workspace for which we already had a bo available in our Lib path
-                bdir <- liftIO $ bDir <$> readMVar stRef
-                dangerous <- liftIO $  boDangerousInPath pcfg bdir workspace (takeBaseName file ++ ".bo")
-                when (errCode == ExitSuccess && dangerous ) $ 
-                    liftIO $ removeFile (workspace ++"/" ++ takeBaseName file ++ ".bo")
-                (diagErrs, diagWarns, maybeNameTable, maybePackage) <- liftIO $ catchException (emptyDiags <$> hmain (commandOptions pcfg cfg workspace ++ [file])  (T.unpack (VFS.virtualFileText vf))) $
+                _ <- liftIO (try (removeFile (workspace ++"/" ++ takeBaseName file ++ ".bo")) :: IO (Either SomeException ()))
+                (diagErrs, diagWarns, maybeNameTable, maybePackage) <- liftIO $ catchException (hmain (commandOptions pcfg cfg workspace ++ [file])  (T.unpack (VFS.virtualFileText vf)) True >>= emptyDiags) $
                                                 return . diagFromExcep
                 diagsForClient doc (diagErrs ++ diagWarns)
                 updateNametable doc maybeNameTable maybePackage
@@ -574,7 +542,7 @@ main = do
                                                             J.Success v -> Right v
                                                             J.Error err -> Left $ T.pack err
                          , onConfigChange = const $ pure ()
-                         , defaultConfig = Config {bscExe = "", projectFile = "" }
+                         , defaultConfig = Config {projectFile = "" }
                          , configSection = "glspc.initializationOptions" -- TODO investigate what this configSection is suppose to do
                          , doInitialize = \env _req -> pure $ Right env
                          , staticHandlers = const handlers
@@ -595,8 +563,8 @@ main = do
 
 -- Use with hugs top level
 -- hmain :: [String] -> String -> IO Bool
-hmain :: [String] -> String -> IO (Bool, BinMap HeapData, CPackage, CPackage)
-hmain args contentFile = do
+hmain :: [String] -> String -> Bool -> IO (Bool, BinMap HeapData, CPackage, CPackage, ErrorHandle)
+hmain args contentFile createBo = do
     pprog <- getProgName
     cdir <- getEnvDef "BLUESPECDIR" dfltBluespecDir
     bscopts <- getEnvDef "BSC_OPTIONS" ""
@@ -618,36 +586,60 @@ hmain args contentFile = do
     case decoded of
         DBlueSrc flags src ->
             do { setFlags flags; doWarnings; showPreamble flags;
-                 main' errh flags src contentFile
+                 (x,y,z,t) <- main' errh flags src contentFile createBo;
+                 return (x,y,z,t, errh)
                 }
         _ -> error "Internal error bsc_lsp"
 
 
 -- main' :: ErrorHandle -> Flags -> String -> String -> IO Bool
-main' :: ErrorHandle -> Flags -> String -> String -> IO (Bool, BinMap HeapData, CPackage, CPackage)
-main' errh flags name contentFile =  do
+main' :: ErrorHandle -> Flags -> String -> String -> Bool -> IO (Bool, BinMap HeapData, CPackage, CPackage)
+main' errh flags name contentFile createBo =  do
     setErrorHandleFlags errh flags
     tStart <- getNow
 
-    -- check system and SAT solver requirements, LSP uses BSC as an executable so we assume BSC will be unhappy 
-    -- if the system is invalid for BSC, no need to redo those system checks all the time
-    -- flags' <- checkSATFlags errh flags
-    -- doSystemCheck errh
-    let comp = compile_no_deps
-    comp errh flags name contentFile
+    -- Quick compile of submodules
+    try (compile_with_deps errh flags name) :: IO (Either SomeException ())
+    let comp = compile
+    comp errh flags name contentFile createBo
 
+compile_with_deps :: ErrorHandle -> Flags -> String -> IO ()
+compile_with_deps errh flags name = do
+    fs <- filter (/= name) <$> chkDeps errh flags name
+    errh' <- initErrorHandle True
+    let
+        -- verb = showUpds flags && not (quiet flags)
+        -- the flags to "compileFile" when re-compiling depended modules
+        flags_depend = flags { updCheck = False,
+                               genName = [],
+                               showCodeGen = False }
+        -- the flags to "compileFile" when re-compiling this module
+        comp (success, binmap0, hashmap0) fn = do
+            file <- doCPP errh flags fn
+            let fl = flags_depend
+            (cur_success, binmap, hashmap, cpackage, parsed)
+                <- compileFile errh' fl binmap0 hashmap0 fn file True
+            return (cur_success && success, binmap, hashmap)
+    -- quick compile them
+    _ <- foldM comp (True, M.empty, M.empty) fs
+    return ()
 
 -- compile_no_deps :: ErrorHandle -> Flags -> String -> String -> IO Bool
-compile_no_deps :: ErrorHandle -> Flags -> String -> String -> IO (Bool, BinMap HeapData, CPackage, CPackage)
-compile_no_deps errh flags name contentFile = do
-  (ok, loaded, _, cpackage, parsed) <- compileFile errh flags M.empty M.empty name contentFile -- Pass the string that contains the thing to tc
+compile :: ErrorHandle -> Flags -> String -> String -> Bool -> IO (Bool, BinMap HeapData, CPackage, CPackage)
+compile errh flags name contentFile createBo = do
+  (ok, loaded, _, cpackage, parsed) <- compileFile errh flags M.empty M.empty name contentFile createBo -- Pass the string that contains the thing to tc
   return (ok, loaded, cpackage, parsed)
 
--- returns whether the compile errored or not
-compileFile :: ErrorHandle -> Flags -> BinMap HeapData -> HashMap -> String -> String ->
-               IO (Bool, BinMap HeapData, HashMap, CPackage, CPackage)
-compileFile errh flags binmap hashmap name_orig file = do
+-- read_and_compile :: ErrorHandle -> Flags -> String -> String -> IO (Bool, BinMap HeapData, CPackage, CPackage)
+-- read_and_compile errh flags name fileName = do
+--   let contentFile = undefined
+--   (ok, loaded, _, cpackage, parsed) <- compileFile errh flags M.empty M.empty name contentFile True -- Pass the string that contains the thing to tc
+--   return (ok, loaded, cpackage, parsed)
 
+-- returns whether the compile errored or not
+compileFile :: ErrorHandle -> Flags -> BinMap HeapData -> HashMap -> String -> String -> Bool ->
+               IO (Bool, BinMap HeapData, HashMap, CPackage, CPackage)
+compileFile errh flags binmap hashmap name_orig file createBo = do
     pwd <- getCurrentDirectory
     let name = (createEncodedFullFilePath name_orig pwd)
 
@@ -658,11 +650,11 @@ compileFile errh flags binmap hashmap name_orig file = do
 
     t <- getNow
     -- ===== the break point between file manipulation and compilation
-    (pkg@(CPackage i _ _ _ _ _), t)
+    (pkg@(CPackage i _ imports _ _ _), t)
         <- parseSrc (syntax == CLASSIC) errh flags True name file
 
     let dumpnames = (baseName (dropSuf name), getIdString (unQualId i), "")
-    compilePackage errh flags dumpnames t binmap hashmap name pkg
+    compilePackage errh flags dumpnames t binmap hashmap name pkg createBo
 
 -------------------------------------------------------------------------
 
@@ -675,6 +667,7 @@ compilePackage ::
     HashMap ->
     String ->
     CPackage ->
+    Bool ->
     IO (Bool, BinMap HeapData, HashMap, CPackage, CPackage)
 compilePackage
     errh
@@ -684,36 +677,15 @@ compilePackage
     binmap0
     hashmap0
     name -- String --
-    min@(CPackage pkgId _ _ _ _ _) = do
-
-    handle <- openFile "/tmp/output.txt" AppendMode
-    liftIO $ hPutStr handle "Start Package\n"
-    liftIO $ hClose handle
-
-    -- Values needed for the Environment module
-    -- TODO: This was dead code in this mutilated compiler, suspicious
-    -- let env =
-    --         [("compilerVersion",iMkString $ bscVersionStr True),
-    --          ("date",                iMkString $ show clkTime),
-    --          ("epochTime",      iMkLitSize 32 $ floor epochTime),
-    --          ("buildVersion",   iMkLitSize 32 $ buildnum),
-    --          ("genPackageName", iMkString $ getIdBaseString pkgId),
-    --          ("testAssert",        iMkRealBool $ testAssert flags)
-    --         ]
-
-    start flags DFimports
+    min@(CPackage pkgId _ _ _ _ _)
+    createBo = do
     -- Read imported signatures
     (mimp@(CPackage _ _ imps _ _ _), binmap, hashmap)
         <- readImports errh flags binmap0 hashmap0 min
 
     -- [T]: binmap contains all the submodules that we care about
     -- Can we know which local identifiers point to what?
-
-    t <- dump errh flags tStart DFimports dumpnames mimp
-
-    start flags DFopparse
     mop <- parseOps errh mimp
-    t <- dump errh flags t DFopparse dumpnames mop
 
     -- Generate a global symbol table
     --
@@ -725,68 +697,71 @@ compilePackage
     -- are known, because these next stages need a table of the current
     -- symbols.
     --
-    start flags DFsyminitial
     symt00 <- mkSymTab errh mop
-    t <- dump errh flags t DFsyminitial dumpnames symt00
 
     -- whether we are doing code generation for modules
     let generating = isJust (backend flags)
 
-    -- Turn `noinline' into module definitions
-    start flags DFgenfuncwrap
     (mfwrp, symt0, funcs) <- genFuncWrap errh flags generating mop symt00
-    t <- dump errh flags t DFgenfuncwrap dumpnames mfwrp
 
     -- Generate wrapper for Verilog interface.
-    start flags DFgenwrap
     (mwrp, gens) <- genWrap errh flags (genName flags) generating mfwrp symt0
-    t <- dump errh flags t DFgenwrap dumpnames mwrp
 
     -- Rebuild the symbol table because GenWrap added new types
     -- and typeclass instances for those types
-    start flags DFsympostgenwrap
     symt1 <- mkSymTab errh mwrp
-    t <- dump errh flags t DFsympostgenwrap dumpnames symt1
 
     -- Re-add function definitions for `noinline'
     mfawrp <- addFuncWrap errh symt1 funcs mwrp
 
     -- Turn deriving into instance declarations
-    start flags DFderiving
     mder <- derive errh flags symt1 mfawrp
-    t <- dump errh flags t DFderiving dumpnames mder
 
     -- Rebuild the symbol table because Deriving added new instances
-    start flags DFsympostderiving
     symt11 <- mkSymTab errh mder
-    t <- dump errh flags t DFsympostderiving dumpnames symt11
 
     -- Reduce the contexts as far as possible
-    start flags DFctxreduce
     mctx <- cCtxReduceIO errh flags symt11 mder
-    t <- dump errh flags t DFctxreduce dumpnames mctx
 
     -- Rebuild the symbol table because CtxReduce has possibly changed
     -- the types of top-level definitions
-    start flags DFsympostctxreduce
     symt <- mkSymTab errh mctx
-    t <- dump errh flags t DFsympostctxreduce dumpnames symt
 
     -- Turn instance declarations into ordinary definitions
-    start flags DFconvinst
     let minst = cConvInst errh symt mctx
-    t <- dump errh flags t DFconvinst dumpnames minst
 
     -- Type check and insert dictionaries
     start flags DFtypecheck
     (mod, tcErrors) <- cTypeCheck errh flags symt minst
-    -- TODO [T]: Here we have the tyupechecking errors we can return them to LSP client
-    -- mod is actually never used! We should probably return mod here, for identifying stuff like
 
-    --putStr (ppReadable mod)
-    t <- dump errh flags t DFtypecheck dumpnames mod
+    -- Need to compute the signature of the imports imports (imps)
+    let (_, _, _, binmods0, pkgsigs) =
+            let findFn i = fromJustOrErr "bsc: binmap" $ M.lookup i binmap
+                sorted_ps = [ getIdString i
+                               | CImpSign _ _ (CSignature i _ _ _) <- imps ]
+            in  L.unzip5 $ map findFn sorted_ps
+    let
+        -- adjust the "raw" packages and then add back their signatures
+        -- so they can be put into the current IPackage for linking info
+        -- binmods = zip (map (adjEnv env) binmods0) pkgsigs
+        binmods = zip binmods0 pkgsigs
+
+    let ipkg_sigs = [ (mi, s) | (m@(IPackage mi _ _ _), s) <- binmods]
+
+    -- handle <- openFile "/tmp/output.txt" AppendMode
+    -- liftIO $ hPutStr handle $ show y
+    -- liftIO $ hClose handle
+
+    -- Generate the user-visible type signature
+    bi_sig <- genUserSign errh symt mctx
+    -- Generate a type signature where everything is visible
+    bo_sig <- genEverythingSign errh symt mctx
+    let bin_filename = putInDir (bdir flags) name binSuffix
+    when createBo $ genBinFile errh bin_filename bi_sig bo_sig (IPackage {
+              -- package name
+              ipkg_name = pkgId,
+              ipkg_depends = ipkg_sigs, -- Need to put the dependences here (name signature)
+              ipkg_pragmas = [],
+              ipkg_defs = []
+          })
     return ( not tcErrors, binmap, hashmap, mod, min)
-
-
--- Our server should compile subpackets
-

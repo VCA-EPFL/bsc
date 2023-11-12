@@ -1,8 +1,9 @@
 import Vector::*;
+import FIFO::*;
 
 typedef Bit#(32) TestType;
 
-typedef struct { Bit#(32) foo; } Bar deriving (Eq);
+typedef struct { Vector#(2,Bit#(32)) foo; } Bar deriving (Eq);
 
 typedef struct { a yo; } Maybe#(type a);
 

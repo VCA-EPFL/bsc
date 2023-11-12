@@ -5,6 +5,7 @@
 -- Note that the OPTIONS line must be first !!!!
 
 module Error(
+             readErrorState,
              prEMsg, serror, swarning,
              extractPosition,
              extractMessage,
@@ -155,8 +156,9 @@ data ErrorState = ErrorState
           -- set of open handles, that need to be flushed/closed on exit
           openHandles :: [Handle],
           -- LSP or compiler
-          lspMode :: Bool
-
+          lspMode :: Bool,
+          lspFinalWarns :: [WMsg],
+          lspContext :: MsgContext
         }
 
 -- -----
@@ -184,7 +186,9 @@ initErrorHandle lspMode = do
                      suppressionSet = SomeMsgs S.empty,
                      suppressedCount = 0,
                      openHandles = [],
-                     lspMode = lspMode
+                     lspMode = lspMode,
+                     lspFinalWarns = [],
+                     lspContext = emptyContext
                    }
   ref <- newIORef init_state
   return (ErrorHandle ref)
@@ -255,10 +259,9 @@ bsWarningsAndErrorsWithContext ref ctx ws ds es = do
   let final_warns = warn_ws ++ warn_ds
       final_errs = err_ws ++ err_ds ++ es
   if lspMode state2 then do
-    -- handle <- openFile "/tmp/reached.txt" AppendMode
-    -- hPutStr handle $ "Error raised " ++ (show final_warns) ++ show (final_errs) 
-    -- hClose handle
-    CE.throw $ ExcepWarnErr final_errs final_warns ctx
+    writeErrorState ref (state2{lspFinalWarns = final_warns, lspContext = ctx})
+    when (not (null final_errs)) $ do
+        CE.throw $ ExcepWarnErr final_errs final_warns ctx
   else do
   -- issue warnings
     when (not (null final_warns)) $ do
