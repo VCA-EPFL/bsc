@@ -543,7 +543,7 @@ main = do
                                                             J.Error err -> Left $ T.pack err
                          , onConfigChange = const $ pure ()
                          , defaultConfig = Config {projectFile = "" }
-                         , configSection = "glspc.initializationOptions" -- TODO investigate what this configSection is suppose to do
+                         , configSection = "bsclsp.initializationOptions" -- TODO investigate what this configSection is suppose to do
                          , doInitialize = \env _req -> pure $ Right env
                          , staticHandlers = const handlers
                         --  , interpretHandler = \env -> Iso (runLspT env) liftIO
