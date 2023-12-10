@@ -30,7 +30,7 @@ import System.Directory
 import Data.Maybe(isJust, fromJust, fromMaybe)
 
 import PreStrings(fsEmpty)
-import Control.Monad(when, foldM)
+import Control.Monad(when, unless, foldM)
 import qualified Data.Map as M
 
 import Util(fromJustOrErr)
@@ -63,6 +63,7 @@ import FlagsDecode(
 import Position(Position (..),
         getPositionLine,
         getPositionFile,
+        noPosition,
         mkPosition)
 import Id
 import Deriving(derive)
@@ -93,7 +94,7 @@ import Control.Lens ((^.), to) -- Convenient
 import Data.Aeson qualified as J
 import GHC.IO(catchException)
 import Control.Monad.Reader (ReaderT, runReaderT, ask)
-import Control.Concurrent.MVar (MVar, newMVar, readMVar, modifyMVar_)
+import Control.Concurrent.MVar (MVar, newMVar, readMVar, modifyMVar_, putMVar)
 
 import Data.List qualified as L
 import Control.Monad qualified as Monad
@@ -107,13 +108,17 @@ import CSyntax
 import GenSign(genUserSign, genEverythingSign)
 import Control.Monad.Except (MonadError(catchError))
 import Control.Exception (SomeException, try)
+import GHC.Conc
+import Data.Maybe (catMaybes)
+
+import SCC(tsort)
 
 
--- Current limitations: 
+-- Current limitations:
 --  - Errors are at the line level (no multiline errors, no end of column error).
 --  - bsc_lsp is singlethreaded
 --  - TODO: Return the package and the name table as best as possible even if compilation fail (currently returns nothing)
---  - TODO: Get type (and so interface) information and not just definition (SMethod_TextDocumentSignatureHelp) 
+--  - TODO: Get type (and so interface) information and not just definition (SMethod_TextDocumentSignatureHelp)
 --  - TODO: Support go to [instance.subinterface1.subsub.method]  in general this is very
 --     difficult. Already instance.method() is tricky as we would need to know
 --     the line where method is defined -> Maybe special case it as it would be
@@ -321,8 +326,8 @@ data ServerState = ServerState {
     -- subpackages that could import the same identifier we keep one global Id
     -- position table per Uri defined
 
-    -- TODO: UI question - what to do when file does not compile, should we 
-    -- keep the old mapping or delete it? 
+    -- TODO: UI question - what to do when file does not compile, should we
+    -- keep the old mapping or delete it?
     -- Currently leaning toward keeping the old mapping.
     visible_global_identifiers :: M.Map LSP.Uri [Id],
     -- Following currently unused
@@ -335,7 +340,7 @@ data ServerState = ServerState {
     -- We are missing the definitions here
 
     -- In the future, this type should carry:
-    -- TODO Add documentations 
+    -- TODO Add documentations
     -- TODO Add Uri -> NonGlobalDefinitions even for broken files
     -- TODO Add all references to Id? Id -> [(Uri, Position)]
     -- TODO Type definitions vs value definitions.
@@ -605,24 +610,58 @@ main' errh flags name contentFile createBo =  do
 
 compile_with_deps :: ErrorHandle -> Flags -> String -> IO ()
 compile_with_deps errh flags name = do
-    fs <- filter (/= name) <$> chkDeps errh flags name
-    errh' <- initErrorHandle True
-    let
-        -- verb = showUpds flags && not (quiet flags)
-        -- the flags to "compileFile" when re-compiling depended modules
-        flags_depend = flags { updCheck = False,
+    -- fs <- filter (/= name) <$> chkDeps errh flags name
+    -- quick compile them
+    chkDeps errh flags name comp
+    -- _ <- foldM comp (True, M.empty, M.empty) fs
+    where
+    flags_depend = flags { updCheck = False,
                                genName = [],
                                showCodeGen = False }
-        -- the flags to "compileFile" when re-compiling this module
-        comp (success, binmap0, hashmap0) fn = do
-            file <- doCPP errh flags fn
-            let fl = flags_depend
-            (cur_success, binmap, hashmap, cpackage, parsed)
-                <- compileFile errh' fl binmap0 hashmap0 fn file True
-            return (cur_success && success, binmap, hashmap)
-    -- quick compile them
-    _ <- foldM comp (True, M.empty, M.empty) fs
-    return ()
+    comp fn = do
+                errh' <- initErrorHandle True
+                file <- doCPP errh flags fn
+                let fl = flags_depend
+                _ <- compileFile errh' fl M.empty M.empty fn file True
+                return ()
+    reccall var_graph = do
+        ready <- atomically (do
+                        old_graph <- readTVar var_graph
+                        let (ready_graph, new_graph) = L.partition (\(pk,depend) -> null depend) old_graph
+                        writeTVar var_graph new_graph
+                        return $ fst <$> ready_graph)
+        if null ready then return ()
+        else let newgraph oldgraph name = catMaybes $ L.map (\(pk,depend) -> if pk == name then Nothing else Just (pk, L.filter (/= name) depend)) oldgraph in
+            do
+                Monad.forM_ ready (\x -> forkIO (do
+                                                comp x
+                                                atomically (do
+                                                    old_graph <- readTVar var_graph
+                                                    writeTVar var_graph $ newgraph old_graph x)
+                                                reccall var_graph
+                                                ))
+    chkDeps errh flags name comp = do
+            let gflags = [ mkId noPosition (mkFString s) | s <- genName flags ]
+            pi <- getInfo errh flags gflags name
+            (errs,pis) <- transClose errh flags ([],[pi]) (imports pi)
+            when (not $ null errs) $ bsError errh errs
+            let graph = [ (n, is) | PkgInfo { pkgName = n, imports = is } <- pis ]
+            case tsort graph of
+                Left cycle@(firstImport:_) ->
+                    bsError errh [(getPosition firstImport, ECircularImports (map P.ppReadable cycle))]
+                Right ns ->  do
+                    let getInfo n = case findInfo n pis of
+                                        Just pi -> pi
+                                        _ -> internalError "Depend.chkDeps: pis'"
+                    -- Drop the prelude dependencies
+                                                -- unless (isPreludePkg flags x) $
+                    let process_graph = catMaybes $ (\(x,y) ->
+                                                            if isPreludePkg flags . fileName . getInfo $ x then Nothing
+                                                            else Just (fileName . getInfo $ x , filter (not . isPreludePkg flags) $ (fileName . getInfo) <$> y)) <$> graph
+                    var_graph <- newTVarIO process_graph :: IO (TVar [(String,[String])])
+                    reccall var_graph
+                Left [] -> internalError "Depend.chkDeps: tsort empty cycle"
+
 
 -- compile_no_deps :: ErrorHandle -> Flags -> String -> String -> IO Bool
 compile :: ErrorHandle -> Flags -> String -> String -> Bool -> IO (Bool, BinMap HeapData, CPackage, CPackage)

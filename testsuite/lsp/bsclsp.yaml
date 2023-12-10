@@ -1,3 +1,4 @@
-bscExtraArgs: []
+bscExtraArgs:
+  - "-sat-stp"
 bscUserDirs:
   - "."

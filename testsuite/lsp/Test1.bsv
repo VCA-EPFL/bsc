@@ -1,6 +1,7 @@
 import Vector::*;
 import Sidemodule::*;
 
+
 module mkBigInterface#(MyInterface yo)(BigFoo);
     let x <- mkMyInterface;
     Reg#(Bool) to <- mkReg(True);

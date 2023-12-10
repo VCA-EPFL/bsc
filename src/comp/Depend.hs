@@ -1,5 +1,5 @@
 {-# LANGUAGE CPP #-}
-module Depend(chkDeps, parseSrc, chkParse, doCPP, genDepend, genFileDepend) where
+module Depend(isPreludePkg, findInfo, chkDeps, parseSrc, chkParse, doCPP, genDepend, genFileDepend, PkgInfo(..), FileName, transClose, getInfo, chkUpd) where
 
 import Data.Maybe(isJust)
 import Data.List(nub)
