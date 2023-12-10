@@ -107,4 +107,5 @@ checkNotEq (SATS_STP stp_state) e1 e2 = do
     (res, stp_state') <- STP.checkNotEq stp_state e1 e2
     return (res, SATS_STP stp_state')
 
+
 -- -------------------------

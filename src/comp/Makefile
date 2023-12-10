@@ -147,6 +147,7 @@ PACKAGES = \
 	-package aeson \
 	-package text-format \
 	-package yaml\
+	-package concurrent-extra\
 	$(GHCEXTRAPKGS)
 
 # GHC can compile either a single file (use GHCCOMPILEFLAGS) or
@@ -310,7 +311,7 @@ bsc: $(SOURCES)
 bsc_lsp: $(SOURCES)
         # Maybe read the updated build stuff
 	$(PREBUILDCOMMAND)
-	$(BUILDCOMMAND) -main-is Main_$@ \
+	$(BUILDCOMMAND) -threaded -main-is Main_$@ \
 		$(BUILDFLAGS) $(RTSFLAGS) $(BSC_BUILDLIBS)
 	$(POSTBUILDCOMMAND)
 

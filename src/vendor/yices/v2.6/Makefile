@@ -44,7 +44,7 @@ install:
 ifeq ($(YICES_STUB),)
 	(cd $(YICES_SRC) ; \
 		autoconf ; \
-		$(CONFIGURE_ENV) ./configure --prefix=$(YICES_INST) ; \
+		$(CONFIGURE_ENV) ./configure --enable-thread-safety --prefix=$(YICES_INST) ; \
 		$(MAKE) $(BUILD_ARGS); \
 		$(MAKE) install \
 		)

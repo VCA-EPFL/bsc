@@ -5,6 +5,8 @@
 
 module Yices (
 
+    doInit,
+    setLSP,
     -- * Types
     Expr,
     Type,
@@ -154,6 +156,7 @@ import Data.List(isPrefixOf)
 import System.IO.Unsafe(unsafePerformIO)
 
 import ErrorUtil
+import Control.Concurrent.Lock qualified as C
 
 word32_size, word64_size :: Int
 word32_size = finiteBitSize (0 :: Word32)
@@ -262,6 +265,19 @@ yicesReset = yices_reset
 {-# NOINLINE globalInit #-}
 globalInit :: IORef Bool
 globalInit = unsafePerformIO $ newIORef False
+
+{-# NOINLINE globalLock #-}
+globalLock :: C.Lock
+globalLock = unsafePerformIO $ C.new
+
+
+{-# NOINLINE lspMode #-}
+lspMode :: IORef Bool
+lspMode = unsafePerformIO $ newIORef False
+
+setLSP :: IO ()
+setLSP = do
+  modifyIORef lspMode (const True)
 
 doInit :: IO ()
 doInit = do
@@ -671,9 +687,10 @@ getBVSize e = do
 -- Contexts
 
 mkContext :: IO Context
-mkContext = do
+mkContext = C.with globalLock $ do
   -- make sure that Yices is initialized
-  doInit
+  lsp <- readIORef lspMode
+  when (not lsp) doInit
   cfg <- yices_new_config
   -- XXX set cfg to BV only?
   ctx <- yices_new_context cfg

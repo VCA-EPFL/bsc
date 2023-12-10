@@ -113,6 +113,7 @@ import Data.Maybe (catMaybes)
 
 import SCC(tsort)
 
+import Yices(doInit, setLSP)
 
 -- Current limitations:
 --  - Errors are at the line level (no multiline errors, no end of column error).
@@ -602,7 +603,8 @@ main' :: ErrorHandle -> Flags -> String -> String -> Bool -> IO (Bool, BinMap He
 main' errh flags name contentFile createBo =  do
     setErrorHandleFlags errh flags
     tStart <- getNow
-
+    setLSP
+    doInit -- <- Hack for parallel Yices
     -- Quick compile of submodules
     try (compile_with_deps errh flags name) :: IO (Either SomeException ())
     let comp = compile
@@ -624,7 +626,7 @@ compile_with_deps errh flags name = do
                 let fl = flags_depend
                 _ <- compileFile errh' fl M.empty M.empty fn file True
                 return ()
-    reccall var_graph = do
+    reccall failed var_graph = do
         ready <- atomically (do
                         old_graph <- readTVar var_graph
                         let (ready_graph, new_graph) = L.partition (\(pk,depend) -> null depend) old_graph
@@ -634,11 +636,11 @@ compile_with_deps errh flags name = do
         else let newgraph oldgraph name = catMaybes $ L.map (\(pk,depend) -> if pk == name then Nothing else Just (pk, L.filter (/= name) depend)) oldgraph in
             do
                 Monad.forM_ ready (\x -> forkIO (do
-                                                comp x
+                                                catchException (comp x) (\(e::SomeException) -> atomically (writeTVar failed True))
                                                 atomically (do
                                                     old_graph <- readTVar var_graph
                                                     writeTVar var_graph $ newgraph old_graph x)
-                                                reccall var_graph
+                                                reccall failed var_graph
                                                 ))
     chkDeps errh flags name comp = do
             let gflags = [ mkId noPosition (mkFString s) | s <- genName flags ]
@@ -654,14 +656,29 @@ compile_with_deps errh flags name = do
                                         Just pi -> pi
                                         _ -> internalError "Depend.chkDeps: pis'"
                     -- Drop the prelude dependencies
-                                                -- unless (isPreludePkg flags x) $
                     let process_graph = catMaybes $ (\(x,y) ->
                                                             if isPreludePkg flags . fileName . getInfo $ x then Nothing
                                                             else Just (fileName . getInfo $ x , filter (not . isPreludePkg flags) $ (fileName . getInfo) <$> y)) <$> graph
                     var_graph <- newTVarIO process_graph :: IO (TVar [(String,[String])])
-                    reccall var_graph
-                Left [] -> internalError "Depend.chkDeps: tsort empty cycle"
+                    failed <- newTVarIO False :: IO (TVar Bool)
+                    reccall failed var_graph
 
+                    -- threadDelay 10000 -- Backoff for 10ms, check if all dependencies are solved
+                    -- Every 5ms try to see if we finished compiling all files: process_graph should be empty
+                    -- We need an escape hatch if everything finished running
+                    let loop = do
+                            old_graph <- readTVarIO var_graph
+                            -- handle <- openFile "/tmp/output.txt" AppendMode
+                            -- liftIO $ hPutStr handle $ show (length old_graph) ++ "\n"
+                            -- liftIO $ hClose handle
+                            actually_failed <- readTVarIO failed
+                            if (null old_graph || actually_failed)
+                            then return ()
+                            else do
+                                threadDelay 100000 -- Backoff for 100ms, check if all dependencies are solved
+                                loop
+                    loop
+                Left [] -> internalError "Depend.chkDeps: tsort empty cycle"
 
 -- compile_no_deps :: ErrorHandle -> Flags -> String -> String -> IO Bool
 compile :: ErrorHandle -> Flags -> String -> String -> Bool -> IO (Bool, BinMap HeapData, CPackage, CPackage)
