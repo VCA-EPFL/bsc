@@ -15,7 +15,7 @@ module Error(
              internalError,
 
              -- initialize the error handler
-             ErrorHandle, initErrorHandle, setErrorHandleFlags,
+             ErrorHandle, initErrorHandle, setErrorHandleFlags, writeErrorState, 
 
              -- update the error handler state when files are opened/closed
              recordHandleOpen, recordHandleClose, closeOpenHandles,

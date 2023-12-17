@@ -303,7 +303,7 @@ bsc: $(SOURCES)
         # to force updating of BuildVersion/BuildSystem when necessary
 	./update-build-version.sh
 	./update-build-system.sh
-	$(BUILDCOMMAND) -main-is Main_$@ \
+	$(BUILDCOMMAND) -threaded -main-is Main_$@ \
 		$(BUILDFLAGS) $(RTSFLAGS) $(BSC_BUILDLIBS)
 	$(POSTBUILDCOMMAND)
 
