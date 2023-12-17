@@ -614,7 +614,7 @@ compile_with_deps :: ErrorHandle -> Flags -> String -> IO ()
 compile_with_deps errh flags name = do
     -- fs <- filter (/= name) <$> chkDeps errh flags name
     -- quick compile them
-    fs <- chkDeps errh flags name
+    -- fs <- chkDeps errh flags name
     _v <- chkDepsAux errh flags name comp
     return ()
     -- _ <- foldM comp (True, M.empty, M.empty) fs
@@ -649,7 +649,7 @@ compile_with_deps errh flags name = do
                                                     tids <- readTVar flyingthreads
                                                     writeTVar flyingthreads (1+tids))
                                                 forkIO (do
-                                                    errh' <- initErrorHandle False
+                                                    errh' <- initErrorHandle True 
                                                     catchException (comp x errh') (\(e::SomeException) -> atomically (writeTVar failed True))
                                                     b <- atomically $ readTVar failed 
                                                     when (not b) $ do 
@@ -682,7 +682,7 @@ compile_with_deps errh flags name = do
 
                     -- let process_graph' = (\(x,y) -> (fileName $ getInfo x, fileName . getInfo <$> y))<$> 
                     -- Drop the prelude dependencies
-                    let process_graph = catMaybes $ (\(x,y) -> Just (fileName . getInfo $ x , filter (not . isPreludePkg flags) . fmap fileName . filter (not . isbin ) $ getInfo <$> y)) <$> [ (n, is) | PkgInfo { pkgName = n, imports = is } <- pis'',  not ( isbin (getInfo n) || (isPreludePkg flags . fileName . getInfo $ n))]
+                    let process_graph = catMaybes $ (\(x,y) -> Just (fileName . getInfo $ x , filter (not . isPreludePkg flags) . filter (/= name). fmap fileName . filter (not . isbin ) $ getInfo <$> y)) <$> [ (n, is) | PkgInfo { pkgName = n, imports = is } <- pis'',  ((fileName . getInfo $ n) /= name) && not ( isbin (getInfo n) || (isPreludePkg flags . fileName . getInfo $ n))]
                     var_graph <- newTVarIO process_graph :: IO (TVar [(String,[String])])
                     failed <- newTVarIO False :: IO (TVar Bool)
                     flyingthreads <- newTVarIO 0 :: IO (TVar Integer)
