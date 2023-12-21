@@ -25,7 +25,7 @@ import Numeric(showOct)
 
 import Control.Monad(when, unless, filterM, liftM, foldM)
 import Control.Monad.Except(runExceptT)
-import Control.Concurrent(forkIO)
+import Control.Concurrent(forkFinally)
 import Control.Concurrent.MVar(newEmptyMVar, putMVar, takeMVar)
 import qualified Control.Exception as CE
 import qualified Data.Map as M
@@ -349,19 +349,19 @@ compile_with_deps errh flags name = do
                                                     writeTVar flyingthreads (1+tids)
                                                     return (1 + tids))
                                                 when (verb) $ putStrLnF $ "Outstandign threads: " ++ show tids
-                                                forkIO (do
+                                                _ <- forkFinally (do
                                                     errh' <- initErrorHandle False
                                                     b <- comp x errh'
-                                                    -- when (verb) $ putStrLnF $ "Finished compiling: " ++ show tids
                                                     if not b then atomically $ writeTVar failed (Just errh')
                                                     else do 
                                                         atomically (do
                                                           old_graph <- readTVar var_graph
                                                           writeTVar var_graph $ newgraph old_graph x)
                                                         reccall flyingthreads failed var_graph)
-                                                atomically (do
-                                                    tids <- readTVar flyingthreads
-                                                    writeTVar flyingthreads (tids-1)))
+                                                    (\x -> atomically (do
+                                                        tids <- readTVar flyingthreads
+                                                        writeTVar flyingthreads (tids-1)))
+                                                return ())
                                             
     chkDepsAux errh flags name comp = do
             setLSP

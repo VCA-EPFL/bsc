@@ -94,6 +94,8 @@ import Control.Lens ((^.), to) -- Convenient
 import Data.Aeson qualified as J
 import GHC.IO(catchException)
 import Control.Monad.Reader (ReaderT, runReaderT, ask)
+
+import Control.Concurrent(forkFinally)
 import Control.Concurrent.MVar (MVar, newMVar, readMVar, modifyMVar_, putMVar)
 
 import Data.List qualified as L
@@ -650,7 +652,7 @@ compile_with_deps errh flags name = do
                                                     writeTVar flyingthreads (1+tids)
                                                 return stopped
                                             when (not stopped) $ do 
-                                                forkIO (do
+                                                _ <- forkFinally (do
                                                     errh' <- initErrorHandle True 
                                                     catchException (comp x errh') (\(e::SomeException) -> atomically (writeTVar failed True))
                                                     b <- atomically $ readTVar failed 
@@ -659,9 +661,10 @@ compile_with_deps errh flags name = do
                                                             old_graph <- readTVar var_graph
                                                             writeTVar var_graph $ newgraph old_graph x)
                                                         reccall flyingthreads failed var_graph)
-                                                atomically (do
-                                                    tids <- readTVar flyingthreads
-                                                    writeTVar flyingthreads (tids-1)))
+                                                    (\x -> atomically (do
+                                                        tids <- readTVar flyingthreads
+                                                        writeTVar flyingthreads (tids-1)))
+                                                return ())
                                             
     chkDepsAux errh flags name comp = do
             setLSP
