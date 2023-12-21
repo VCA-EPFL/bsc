@@ -643,21 +643,22 @@ compile_with_deps errh flags name = do
         else let newgraph oldgraph name = catMaybes $ L.map (\(pk,depend) -> if pk == name then Nothing else Just (pk, L.filter (/= name) depend)) oldgraph in
             do
                 Monad.forM_ ready (\x -> do
-                                            stopped <- atomically $ readTVar failed
-                                            when (not stopped) $ do
-                                                atomically (do
+                                            stopped <- atomically $ do 
+                                                stopped <- readTVar failed
+                                                when (not stopped) $ do
                                                     tids <- readTVar flyingthreads
-                                                    writeTVar flyingthreads (1+tids))
+                                                    writeTVar flyingthreads (1+tids)
+                                                return stopped
+                                            when (not stopped) $ do 
                                                 forkIO (do
                                                     errh' <- initErrorHandle True 
                                                     catchException (comp x errh') (\(e::SomeException) -> atomically (writeTVar failed True))
                                                     b <- atomically $ readTVar failed 
                                                     when (not b) $ do 
                                                         atomically (do
-                                                          old_graph <- readTVar var_graph
-                                                          writeTVar var_graph $ newgraph old_graph x)
-                                                        reccall flyingthreads failed var_graph
-                                                    )
+                                                            old_graph <- readTVar var_graph
+                                                            writeTVar var_graph $ newgraph old_graph x)
+                                                        reccall flyingthreads failed var_graph)
                                                 atomically (do
                                                     tids <- readTVar flyingthreads
                                                     writeTVar flyingthreads (tids-1)))
@@ -688,8 +689,10 @@ compile_with_deps errh flags name = do
                     flyingthreads <- newTVarIO 0 :: IO (TVar Integer)
                     reccall flyingthreads failed var_graph
                     let loop = do
-                            actually_failed <- readTVarIO failed
-                            tids <- atomically $ readTVar flyingthreads
+                            tids <- atomically $ do
+                                x <- readTVar flyingthreads
+                                when (x == 0) $ writeTVar failed True
+                                return x
                             if (tids == 0)
                             then
                                 return ()

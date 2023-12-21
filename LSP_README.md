@@ -18,3 +18,16 @@ As an example, you can refer to `except_bsclsp.yaml`
 # Notes
 
 `bsc_lsp` always passes `--aggressive-conditions` to the compiler.
+
+# Dependencies:
+
+Several hackage dependencies:
+```
+lsp lsp-test text-format yaml concurrent-extra
+``` 
+
+For example: 
+```sh
+cabal v1-install lsp lsp-test text-format yaml concurrent-extra
+```
+

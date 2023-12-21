@@ -330,6 +330,7 @@ compile_with_deps errh flags name = do
                       else flags_depend
                 when (verb) $ putStrLnF ("compiling " ++ fn)
                 (ok, _, _) <- compileFile errh' fl M.empty M.empty fn 
+                when (verb) $ putStrLnF ("compiled " ++ fn ++ " " ++ show ok)
                 return ok
     reccall flyingthreads failed var_graph = do
         ready <- atomically (do
@@ -343,19 +344,21 @@ compile_with_deps errh flags name = do
                 Monad.forM_ ready (\x -> do
                                             keepGoing <- atomically (readTVar failed)
                                             when (isNothing keepGoing) $ do
-                                                atomically (do
+                                                tids <- atomically (do
                                                     tids <- readTVar flyingthreads
-                                                    writeTVar flyingthreads (1+tids))
+                                                    writeTVar flyingthreads (1+tids)
+                                                    return (1 + tids))
+                                                when (verb) $ putStrLnF $ "Outstandign threads: " ++ show tids
                                                 forkIO (do
                                                     errh' <- initErrorHandle False
                                                     b <- comp x errh'
+                                                    -- when (verb) $ putStrLnF $ "Finished compiling: " ++ show tids
                                                     if not b then atomically $ writeTVar failed (Just errh')
                                                     else do 
                                                         atomically (do
                                                           old_graph <- readTVar var_graph
                                                           writeTVar var_graph $ newgraph old_graph x)
-                                                        reccall flyingthreads failed var_graph
-                                                    )
+                                                        reccall flyingthreads failed var_graph)
                                                 atomically (do
                                                     tids <- readTVar flyingthreads
                                                     writeTVar flyingthreads (tids-1)))
