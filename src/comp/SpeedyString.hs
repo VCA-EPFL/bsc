@@ -10,6 +10,7 @@ import qualified Data.IntMap as M
 import ErrorUtil (internalError)
 import qualified Data.Generics as Generic
 
+import Control.Concurrent.Lock qualified as C
 
 data SString = SString !Int -- unique id
    deriving (Generic.Data, Generic.Typeable)
@@ -46,9 +47,8 @@ filter :: (Char -> Bool) -> SString -> SString
 filter pred s = fromString $ Prelude.filter pred (toString s)
 
 -- private
-
 newSString :: String -> SString
-newSString s = unsafePerformIO $
+newSString s = unsafePerformIO $ C.with globalLock $
                do id <- freshInt
                   let ss = SString id
                   sm <- readVar strings
@@ -70,9 +70,11 @@ err = internalError "SpeedyString: inconsistent representation"
 
 -- internal representation
 
+{-# NOINLINE strings #-}
 strings :: MutableVar (M.IntMap String)
 strings = unsafePerformIO $ newVar (M.empty)
 
+{-# NOINLINE sstrings #-}
 sstrings :: MutableVar (M.IntMap [(String, SString)])
 sstrings = unsafePerformIO $ newVar (M.empty)
 
@@ -87,10 +89,17 @@ hashStr s = f s 0
 
 -- unique id factory
 
+{-# NOINLINE nextInt #-}
 nextInt :: MutableVar Int
 nextInt = unsafePerformIO $ (newVar 0)
 
+{-# NOINLINE globalLock #-}
+globalLock :: C.Lock
+globalLock = unsafePerformIO $ C.new
+
+-- C.with globalLock $ 
 freshInt :: IO Int
-freshInt = do fresh <- readVar nextInt
+freshInt = do 
+              fresh <- readVar nextInt
               writeVar nextInt (fresh + 1)
               return fresh
