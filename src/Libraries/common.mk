@@ -20,6 +20,7 @@ BSCFLAGS_EXT += -p .
 # Specify a vsearch path to replace the default
 # (to avoid warnings about the directory not existing)
 BSCFLAGS_EXT += -vsearch $(BUILDDIR)
+BSCFLAGS_EXT += +RTS -N8 -RTS
 # Increase the RTS stack
 #BSCFLAGS_EXT += +RTS -K32M -RTS
 

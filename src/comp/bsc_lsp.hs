@@ -4,7 +4,7 @@
 {-# HLINT ignore "Use camelCase" #-}
 {-# HLINT ignore "Use mapMaybe" #-}
 module Main_bsc_lsp(main, hmain) where
-
+import System.Mem (performMajorGC)
 -- Haskell libs
 import Prelude
 import System.Environment(getProgName)
@@ -603,8 +603,8 @@ hmain args contentFile createBo = do
 -- main' :: ErrorHandle -> Flags -> String -> String -> IO Bool
 main' :: ErrorHandle -> Flags -> String -> String -> Bool -> IO (Bool, BinMap HeapData, CPackage, CPackage)
 main' errh flags name contentFile createBo =  do
-    setErrorHandleFlags errh flags
     tStart <- getNow
+    performMajorGC 
     setLSP
     doInit -- <- Hack for parallel Yices
     -- Quick compile of submodules
@@ -617,8 +617,7 @@ compile_with_deps errh flags name = do
     -- fs <- filter (/= name) <$> chkDeps errh flags name
     -- quick compile them
     -- fs <- chkDeps errh flags name
-    _v <- chkDepsAux errh flags name comp
-    return ()
+    chkDepsAux errh flags name comp
     -- _ <- foldM comp (True, M.empty, M.empty) fs
     where
     flags_depend = flags { updCheck = False,
@@ -628,14 +627,14 @@ compile_with_deps errh flags name = do
     comp fn errh'= do
                 -- let errh' = errh
                 let fl = flags_depend
-                let fl = if (fn == name)
-                      then flags_this
-                      else flags_depend
+                -- let fl = if (fn == name)
+                --       then flags_this
+                --       else flags_depend
                 file <- doCPP errh' fl fn
                 -- when (verb) $ putStrLnF ("compiling " ++ fn)
                 compileFile errh' fl M.empty M.empty fn file True
                 return ()
-    reccall flyingthreads failed var_graph = do
+    reccall log flyingthreads failed var_graph = do
         ready <- atomically (do
                         old_graph <- readTVar var_graph
                         let (ready_graph, new_graph) = L.partition (\(pk,depend) -> null depend) old_graph
@@ -651,16 +650,27 @@ compile_with_deps errh flags name = do
                                                     tids <- readTVar flyingthreads
                                                     writeTVar flyingthreads (1+tids)
                                                 return stopped
+                                            tids <- atomically $ readTVar flyingthreads
+                                            -- putStrLnF $ "Outstandign threads: " ++ show tids
                                             when (not stopped) $ do 
                                                 _ <- forkFinally (do
                                                     errh' <- initErrorHandle True 
+                                                    -- atomically $ do
+                                                    --     y <- readTVar log 
+                                                    --     tids <- readTVar flyingthreads
+                                                    --     writeTVar log (y ++ "Compile " ++ show tids ++ " " ++ show x ++ "\n")
                                                     catchException (comp x errh') (\(e::SomeException) -> atomically (writeTVar failed True))
+                                                    -- atomically $ do
+                                                    --     y <- readTVar log 
+                                                    --     tids <- readTVar flyingthreads
+                                                    --     writeTVar log (y ++ "Compiled " ++ show tids ++ " " ++ show x ++ "\n")
+                                                    -- putStrLnF $ "Compiled: " ++ show x
                                                     b <- atomically $ readTVar failed 
                                                     when (not b) $ do 
                                                         atomically (do
                                                             old_graph <- readTVar var_graph
                                                             writeTVar var_graph $ newgraph old_graph x)
-                                                        reccall flyingthreads failed var_graph)
+                                                        reccall log flyingthreads failed var_graph)
                                                     (\x -> atomically (do
                                                         tids <- readTVar flyingthreads
                                                         writeTVar flyingthreads (tids-1)))
@@ -690,20 +700,26 @@ compile_with_deps errh flags name = do
                     var_graph <- newTVarIO process_graph :: IO (TVar [(String,[String])])
                     failed <- newTVarIO False :: IO (TVar Bool)
                     flyingthreads <- newTVarIO 0 :: IO (TVar Integer)
-                    reccall flyingthreads failed var_graph
+                    log <- newTVarIO "" :: IO (TVar String)
+                    reccall log flyingthreads failed var_graph
                     let loop = do
                             tids <- atomically $ do
                                 x <- readTVar flyingthreads
                                 when (x == 0) $ writeTVar failed True
                                 return x
                             if (tids == 0)
-                            then
+                            then do
+                                -- Write file
+                                y <- atomically $ readTVar log
+                                handle <- openFile "/tmp/output.txt" AppendMode
+                                liftIO $ hPutStr handle $ show y
+                                liftIO $ hClose handle
                                 return ()
                             else do
                                 threadDelay 100000 -- Backoff for 100ms, check if all dependencies are solved
                                 loop
                     loop
-                Left [] -> internalError "Depend.chkDeps: tsort empty cycle"
+                Left [] -> return () --internalError "Depend.chkDeps: tsort empty cycle"
 
 
 -- compile_with_deps :: ErrorHandle -> Flags -> String -> IO ()
