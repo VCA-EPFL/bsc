@@ -23,11 +23,15 @@ As an example, you can refer to `except_bsclsp.yaml`
 
 Several hackage dependencies:
 ```
-lsp lsp-test text-format yaml concurrent-extra
-``` 
-
-For example: 
-```sh
-cabal v1-install lsp lsp-test text-format yaml concurrent-extra
+lsp lsp-test text-format yaml concurrent-extra extra
 ```
+
+For example:
+```sh
+cabal v1-install lsp lsp-test text-format yaml concurrent-extra extra
+```
+
+TODO: Directly read [.bo] if stdlib file.
+Skip everything else.
+Generate a warning when trying to write in such a file
 

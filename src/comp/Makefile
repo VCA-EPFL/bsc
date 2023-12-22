@@ -148,6 +148,7 @@ PACKAGES = \
 	-package text-format \
 	-package yaml\
 	-package concurrent-extra\
+	-package extra\
 	$(GHCEXTRAPKGS)
 
 # GHC can compile either a single file (use GHCCOMPILEFLAGS) or
