@@ -405,8 +405,14 @@ compile_with_deps errh flags name = do
                                      writeErrorState errh errhv
                                      return False
                                  Nothing ->  do
-                                     when verb $ putStrLnF "All packages are up to date."
-                                     return True
+                                     ready <- atomically (do
+                                            old_graph <- readTVar var_graph
+                                            let (ready_graph, _new_graph) = L.partition (\(pk,depend) -> null depend) old_graph
+                                            return $ fst <$> ready_graph)
+                                     if null ready then do
+                                         when verb $ putStrLnF "All packages are up to date."
+                                         return True
+                                     else loop
                             else do
                                 threadDelay 100000 -- Backoff for 100ms, check if all dependencies are solved
                                 loop
