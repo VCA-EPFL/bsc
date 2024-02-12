@@ -358,9 +358,10 @@ compile_with_deps errh flags name = do
                                                           old_graph <- readTVar var_graph
                                                           writeTVar var_graph $ newgraph old_graph x)
                                                         reccall flyingthreads failed var_graph)
-                                                    (\x -> atomically (do
-                                                        tids <- readTVar flyingthreads
-                                                        writeTVar flyingthreads (tids-1)))
+                                                    (\x -> do
+                                                        atomically (do
+                                                            tids <- readTVar flyingthreads
+                                                            writeTVar flyingthreads (tids-1)))
                                                 return ())
                                             
     chkDepsAux errh flags name comp = do
