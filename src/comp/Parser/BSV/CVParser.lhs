@@ -1878,12 +1878,11 @@ parse valueOf and stringOf: these are like function call, but applied to a type
 > pLambda :: SV_Parser CExpr
 > pLambda = do
 >   p <- getPos
->   pSymbol SV_SYM_lbrace
->   pSymbol SV_SYM_percent
+>   pSymbol SV_SYM_lambda_l
 >   names <- many1 pIdentifier
 >   pSymbol SV_SYM_minus_gt
 >   e <- pExpression
->   pSymbol SV_SYM_rbrace
+>   pSymbol SV_SYM_lambda_r
 >   return $ cLam p (map CPVar names) e
 
 

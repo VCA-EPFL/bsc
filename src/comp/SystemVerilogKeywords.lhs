@@ -293,6 +293,8 @@ Symbols
 
 > data SV_Symbol
 >     = SV_SYM_plus
+>     | SV_SYM_lambda_l
+>     | SV_SYM_lambda_r
 >     | SV_SYM_minus
 >     | SV_SYM_bang
 >     | SV_SYM_tilde
@@ -710,6 +712,8 @@ Symbol table
 >      (SV_SYM_gt_gt_eq,            ">>=",                  SystemVerilog31a),
 >      (SV_SYM_lt_lt_lt_eq,         "<<<=",                 SystemVerilog31a),
 >      (SV_SYM_gt_gt_gt_eq,         ">>>=",                 SystemVerilog31a),
+>      (SV_SYM_lambda_l,              "#|",                    Bluespec38),
+>      (SV_SYM_lambda_r,              "|#",                    Bluespec38),
 >      (SV_SYM_dot_star,            ".*",                   Bluespec38),
 >      (SV_SYM_lt_minus,            "<-",                   Bluespec38),
 >      (SV_SYM_lt_gt,               "<>",                   Bluespec38),
