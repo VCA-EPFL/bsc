@@ -1880,11 +1880,11 @@ parse valueOf and stringOf: these are like function call, but applied to a type
 >   p <- getPos
 >   pSymbol SV_SYM_lbrace
 >   pSymbol SV_SYM_percent
->   name <- pIdentifier
+>   names <- many1 pIdentifier
 >   pSymbol SV_SYM_minus_gt
 >   e <- pExpression
 >   pSymbol SV_SYM_rbrace
->   return $ cLam p [CPVar name] e
+>   return $ cLam p (map CPVar names) e
 
 
 > cLam :: Position -> [CPat] -> CExpr -> CExpr
