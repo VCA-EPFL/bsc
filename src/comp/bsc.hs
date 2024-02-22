@@ -266,159 +266,159 @@ main' errh flags name =  do
      else
        exitFail errh
 
--- compile_with_deps :: ErrorHandle -> Flags -> String -> IO (Bool)
--- compile_with_deps errh flags name = do
---     let
---         verb = showUpds flags && not (quiet flags)
---         -- the flags to "compileFile" when re-compiling depended modules
---         flags_depend = flags { updCheck = False,
---                                genName = [],
---                                showCodeGen = verb }
---         -- the flags to "compileFile" when re-compiling this module
---         flags_this = flags_depend { genName = genName flags }
---         comp (success, binmap0, hashmap0) fn = do
---             when (verb) $ putStrLnF ("compiling " ++ fn)
---             let fl = if (fn == name)
---                      then flags_this
---                      else flags_depend
---             (cur_success, binmap, hashmap)
---                 <- compileFile errh fl binmap0 hashmap0 fn
---             return (cur_success && success, binmap, hashmap)
---     when (verb) $ putStrLnF "checking package dependencies"
-
---     t <- getNow
---     let dumpnames = (baseName (dropSuf name), "", "")
-
---     -- get the list of depended files which need recompiling
---     start flags DFdepend
---     fs <- chkDeps errh flags name
---     _ <- dump errh flags t DFdepend dumpnames fs
-
---     -- compile them
---     (ok, _, _) <- foldM comp (True, M.empty, M.empty) fs
-
---     when (verb) $
---       if ok then
---           putStrLnF "All packages are up to date."
---       else putStrLnF "All packages compiled (some with errors)."
-
---     return ok
-
-compile_with_deps :: ErrorHandle -> Flags -> String -> IO Bool
+compile_with_deps :: ErrorHandle -> Flags -> String -> IO (Bool)
 compile_with_deps errh flags name = do
-    -- fs <- filter (/= name) <$> chkDeps errh flags name
-    -- quick compile them
+    let
+        verb = showUpds flags && not (quiet flags)
+        -- the flags to "compileFile" when re-compiling depended modules
+        flags_depend = flags { updCheck = False,
+                               genName = [],
+                               showCodeGen = verb }
+        -- the flags to "compileFile" when re-compiling this module
+        flags_this = flags_depend { genName = genName flags }
+        comp (success, binmap0, hashmap0) fn = do
+            when (verb) $ putStrLnF ("compiling " ++ fn)
+            let fl = if (fn == name)
+                     then flags_this
+                     else flags_depend
+            (cur_success, binmap, hashmap)
+                <- compileFile errh fl binmap0 hashmap0 fn
+            return (cur_success && success, binmap, hashmap)
     when (verb) $ putStrLnF "checking package dependencies"
+
     t <- getNow
     let dumpnames = (baseName (dropSuf name), "", "")
+
+    -- get the list of depended files which need recompiling
     start flags DFdepend
     fs <- chkDeps errh flags name
     _ <- dump errh flags t DFdepend dumpnames fs
-    chkDepsAux errh flags name comp
-    -- _ <- foldM comp (True, M.empty, M.empty) fs
-    where
-    verb = showUpds flags && not (quiet flags)
-    flags_depend = flags { updCheck = False,
-                               genName = [],
-                               showCodeGen = False }
-    flags_this = flags_depend { genName = genName flags }
-    comp fn errh'= do
-                -- let errh' = errh
-                let fl = flags_depend
-                let fl = if (fn == name)
-                      then flags_this
-                      else flags_depend
-                when (verb) $ putStrLnF ("compiling " ++ fn)
-                (ok, _, _) <- compileFile errh' fl M.empty M.empty fn 
-                when (verb) $ putStrLnF ("compiled " ++ fn ++ " " ++ show ok)
-                return ok
-    reccall flyingthreads failed var_graph = do
-        ready <- atomically (do
-                        old_graph <- readTVar var_graph
-                        let (ready_graph, new_graph) = L.partition (\(pk,depend) -> null depend) old_graph
-                        writeTVar var_graph new_graph
-                        return $ fst <$> ready_graph)
-        if null ready then return ()
-        else let newgraph oldgraph name = catMaybes $ L.map (\(pk,depend) -> if pk == name then Nothing else Just (pk, L.filter (/= name) depend)) oldgraph in
-            do
-                Monad.forM_ ready (\x -> do
-                                            keepGoing <- atomically (readTVar failed)
-                                            when (isNothing keepGoing) $ do
-                                                tids <- atomically (do
-                                                    tids <- readTVar flyingthreads
-                                                    writeTVar flyingthreads (1+tids)
-                                                    return (1 + tids))
-                                                when (verb) $ putStrLnF $ "Outstandign threads: " ++ show tids
-                                                _ <- forkFinally (do
-                                                    errh' <- initErrorHandle False
-                                                    b <- comp x errh'
-                                                    if not b then atomically $ writeTVar failed (Just errh')
-                                                    else do 
-                                                        atomically (do
-                                                          old_graph <- readTVar var_graph
-                                                          writeTVar var_graph $ newgraph old_graph x)
-                                                        reccall flyingthreads failed var_graph)
-                                                    (\x -> do
-                                                        atomically (do
-                                                            tids <- readTVar flyingthreads
-                                                            writeTVar flyingthreads (tids-1)))
-                                                return ())
-                                            
-    chkDepsAux errh flags name comp = do
-            setLSP
-            doInit
-            let gflags = [ mkId noPosition (mkFString s) | s <- genName flags ]
-            pi <- getInfo errh flags gflags name
-            (errs, pis) <- transClose errh flags ([],[pi]) (imports pi)
-            when (not $ null errs) $ bsError errh errs
-            let graph = [ (n, is) | PkgInfo { pkgName = n, imports = is } <- pis ]
-            case tsort graph of
-                Left cycle@(firstImport:_) ->
-                    bsError errh [(getPosition firstImport, ECircularImports (map P.ppReadable cycle))]
-                Right ns ->  do
-                    let getInfo n = case findInfo n pis of
-                                        Just pi -> pi
-                                        _ -> internalError "Depend.chkDeps: pis'"
-                    let pis' = map getInfo ns
-                    pis'' <- chkUpd flags [] pis'
 
-                    -- let process_graph' = (\(x,y) -> (fileName $ getInfo x, fileName . getInfo <$> y))<$> 
-                    -- Drop the prelude dependencies
-                    let process_graph = catMaybes $ (\(x,y) -> Just (fileName . getInfo $ x , filter (not . isPreludePkg flags) . fmap fileName . filter (not . isbin ) $ getInfo <$> y)) <$> [ (n, is) | PkgInfo { pkgName = n, imports = is } <- pis'',  not ( isbin (getInfo n) || (isPreludePkg flags . fileName . getInfo $ n))]
-                    var_graph <- newTVarIO process_graph :: IO (TVar [(String,[String])])
-                    failed <- newTVarIO Nothing :: IO (TVar (Maybe ErrorHandle))
-                    flyingthreads <- newTVarIO 0 :: IO (TVar Integer)
-                    when (verb) $ putStrLnF "Starting parallel compilation"
-                    reccall flyingthreads failed var_graph
-                    -- threadDelay 10000 -- Backoff for 10ms, check if all dependencies are solved
-                    -- Every 5ms try to see if we finished compiling all files: process_graph should be empty
-                    -- We need an escape hatch if everything finished running
-                    let loop = do
-                            -- when (verb) $ putStrLnF $ "Pull" ++ show old_graph
-                            actually_failed <- readTVarIO failed
-                            tids <- atomically $ readTVar flyingthreads
-                            if (tids == 0)
-                            then
-                                case actually_failed of
-                                 Just errh' -> do 
-                                     when verb $ putStrLnF "All packages compiled (some with errors)."
-                                     errhv <- readErrorState errh'
-                                     writeErrorState errh errhv
-                                     return False
-                                 Nothing ->  do
-                                     ready <- atomically (do
-                                            old_graph <- readTVar var_graph
-                                            let (ready_graph, _new_graph) = L.partition (\(pk,depend) -> null depend) old_graph
-                                            return $ fst <$> ready_graph)
-                                     if null ready then do
-                                         when verb $ putStrLnF "All packages are up to date."
-                                         return True
-                                     else loop
-                            else do
-                                threadDelay 100000 -- Backoff for 100ms, check if all dependencies are solved
-                                loop
-                    loop
-                Left [] -> internalError "Depend.chkDeps: tsort empty cycle"
+    -- compile them
+    (ok, _, _) <- foldM comp (True, M.empty, M.empty) fs
+
+    when (verb) $
+      if ok then
+          putStrLnF "All packages are up to date."
+      else putStrLnF "All packages compiled (some with errors)."
+
+    return ok
+
+-- compile_with_deps :: ErrorHandle -> Flags -> String -> IO Bool
+-- compile_with_deps errh flags name = do
+--     -- fs <- filter (/= name) <$> chkDeps errh flags name
+--     -- quick compile them
+--     when (verb) $ putStrLnF "checking package dependencies"
+--     t <- getNow
+--     let dumpnames = (baseName (dropSuf name), "", "")
+--     start flags DFdepend
+--     fs <- chkDeps errh flags name
+--     _ <- dump errh flags t DFdepend dumpnames fs
+--     chkDepsAux errh flags name comp
+--     -- _ <- foldM comp (True, M.empty, M.empty) fs
+--     where
+--     verb = showUpds flags && not (quiet flags)
+--     flags_depend = flags { updCheck = False,
+--                                genName = [],
+--                                showCodeGen = False }
+--     flags_this = flags_depend { genName = genName flags }
+--     comp fn errh'= do
+--                 -- let errh' = errh
+--                 let fl = flags_depend
+--                 let fl = if (fn == name)
+--                       then flags_this
+--                       else flags_depend
+--                 when (verb) $ putStrLnF ("compiling " ++ fn)
+--                 (ok, _, _) <- compileFile errh' fl M.empty M.empty fn 
+--                 when (verb) $ putStrLnF ("compiled " ++ fn ++ " " ++ show ok)
+--                 return ok
+--     reccall flyingthreads failed var_graph = do
+--         ready <- atomically (do
+--                         old_graph <- readTVar var_graph
+--                         let (ready_graph, new_graph) = L.partition (\(pk,depend) -> null depend) old_graph
+--                         writeTVar var_graph new_graph
+--                         return $ fst <$> ready_graph)
+--         if null ready then return ()
+--         else let newgraph oldgraph name = catMaybes $ L.map (\(pk,depend) -> if pk == name then Nothing else Just (pk, L.filter (/= name) depend)) oldgraph in
+--             do
+--                 Monad.forM_ ready (\x -> do
+--                                             keepGoing <- atomically (readTVar failed)
+--                                             when (isNothing keepGoing) $ do
+--                                                 tids <- atomically (do
+--                                                     tids <- readTVar flyingthreads
+--                                                     writeTVar flyingthreads (1+tids)
+--                                                     return (1 + tids))
+--                                                 when (verb) $ putStrLnF $ "Outstandign threads: " ++ show tids
+--                                                 _ <- forkFinally (do
+--                                                     errh' <- initErrorHandle False
+--                                                     b <- comp x errh'
+--                                                     if not b then atomically $ writeTVar failed (Just errh')
+--                                                     else do 
+--                                                         atomically (do
+--                                                           old_graph <- readTVar var_graph
+--                                                           writeTVar var_graph $ newgraph old_graph x)
+--                                                         reccall flyingthreads failed var_graph)
+--                                                     (\x -> do
+--                                                         atomically (do
+--                                                             tids <- readTVar flyingthreads
+--                                                             writeTVar flyingthreads (tids-1)))
+--                                                 return ())
+                                            
+--     chkDepsAux errh flags name comp = do
+--             setLSP
+--             doInit
+--             let gflags = [ mkId noPosition (mkFString s) | s <- genName flags ]
+--             pi <- getInfo errh flags gflags name
+--             (errs, pis) <- transClose errh flags ([],[pi]) (imports pi)
+--             when (not $ null errs) $ bsError errh errs
+--             let graph = [ (n, is) | PkgInfo { pkgName = n, imports = is } <- pis ]
+--             case tsort graph of
+--                 Left cycle@(firstImport:_) ->
+--                     bsError errh [(getPosition firstImport, ECircularImports (map P.ppReadable cycle))]
+--                 Right ns ->  do
+--                     let getInfo n = case findInfo n pis of
+--                                         Just pi -> pi
+--                                         _ -> internalError "Depend.chkDeps: pis'"
+--                     let pis' = map getInfo ns
+--                     pis'' <- chkUpd flags [] pis'
+
+--                     -- let process_graph' = (\(x,y) -> (fileName $ getInfo x, fileName . getInfo <$> y))<$> 
+--                     -- Drop the prelude dependencies
+--                     let process_graph = catMaybes $ (\(x,y) -> Just (fileName . getInfo $ x , filter (not . isPreludePkg flags) . fmap fileName . filter (not . isbin ) $ getInfo <$> y)) <$> [ (n, is) | PkgInfo { pkgName = n, imports = is } <- pis'',  not ( isbin (getInfo n) || (isPreludePkg flags . fileName . getInfo $ n))]
+--                     var_graph <- newTVarIO process_graph :: IO (TVar [(String,[String])])
+--                     failed <- newTVarIO Nothing :: IO (TVar (Maybe ErrorHandle))
+--                     flyingthreads <- newTVarIO 0 :: IO (TVar Integer)
+--                     when (verb) $ putStrLnF "Starting parallel compilation"
+--                     reccall flyingthreads failed var_graph
+--                     -- threadDelay 10000 -- Backoff for 10ms, check if all dependencies are solved
+--                     -- Every 5ms try to see if we finished compiling all files: process_graph should be empty
+--                     -- We need an escape hatch if everything finished running
+--                     let loop = do
+--                             -- when (verb) $ putStrLnF $ "Pull" ++ show old_graph
+--                             actually_failed <- readTVarIO failed
+--                             tids <- atomically $ readTVar flyingthreads
+--                             if (tids == 0)
+--                             then
+--                                 case actually_failed of
+--                                  Just errh' -> do 
+--                                      when verb $ putStrLnF "All packages compiled (some with errors)."
+--                                      errhv <- readErrorState errh'
+--                                      writeErrorState errh errhv
+--                                      return False
+--                                  Nothing ->  do
+--                                      ready <- atomically (do
+--                                             old_graph <- readTVar var_graph
+--                                             let (ready_graph, _new_graph) = L.partition (\(pk,depend) -> null depend) old_graph
+--                                             return $ fst <$> ready_graph)
+--                                      if null ready then do
+--                                          when verb $ putStrLnF "All packages are up to date."
+--                                          return True
+--                                      else loop
+--                             else do
+--                                 threadDelay 100000 -- Backoff for 100ms, check if all dependencies are solved
+--                                 loop
+--                     loop
+--                 Left [] -> internalError "Depend.chkDeps: tsort empty cycle"
 
 
 compile_no_deps :: ErrorHandle -> Flags -> String -> IO (Bool)

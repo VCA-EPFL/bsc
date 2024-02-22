@@ -1875,11 +1875,34 @@ parse valueOf and stringOf: these are like function call, but applied to a type
 > pPrimary :: SV_Parser CExpr
 > pPrimary = pPrimaryCaring True
 
+> pLambda :: SV_Parser CExpr
+> pLambda = do
+>   p <- getPos
+>   pSymbol SV_SYM_lbrace
+>   pSymbol SV_SYM_percent
+>   name <- pIdentifier
+>   pSymbol SV_SYM_minus_gt
+>   e <- pExpression
+>   pSymbol SV_SYM_rbrace
+>   return $ cLam p [CPVar name] e
+
+
+> cLam :: Position -> [CPat] -> CExpr -> CExpr
+> -- We special-case CPVar and CPAny because the typechecker can
+> -- propagate more type information in those cases.
+> cLam _ [] e = e -- many1 means this case should be impossible.
+> cLam pos (CPVar i   : ps)  e = CLam (Right i)   $ cLam pos ps e
+> cLam pos (CPAny pos' : ps) e = CLam (Left pos') $ cLam pos ps e
+> cLam pos ps e = Cletseq [CLValue id_lam' [CClause ps [] e] []] (CVar id_lam')
+>   where id_lam' = id_lam pos
+
+
 > pPrimaryCaring :: Bool -> SV_Parser CExpr
 > pPrimaryCaring allowDontCare
 >     =  ((pNumericLiteral >>= pPrimaryWithSuffix)
 >         <|> pStringLiteral
 >         <|> pCasting
+>         <|> pLambda
 >         <|> pActionExpr
 >         <|> pActionValueExpr
 >         <|> pSequenceExpr
