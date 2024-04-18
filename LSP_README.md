@@ -4,10 +4,9 @@ Tested only with a small fork of the minimal vscode lsp client `vscode-glspc` (g
 
 Need to define some settings (from vscode settings pannel):
 ```
-    "glspc.languageId": "bluespec",
-    "glspc.serverCommand": "PATHTO/bsc-lsp/inst/bin/bsc_lsp", // Points to the bsc_lsp binary
-    "glspc.initializationOptions": {
-        "projectFile": "bsclsp.yaml", // This is relative to the workspace, should probably be left alone
+    "bsclsp.serverCommand": "PATH/bsc/inst/bin/bsc_lsp",
+    "bsclsp.initializationOptions": {
+        "projectFile": "bsclsp.yaml", // Relative to the workspace
     },
 
 ```
