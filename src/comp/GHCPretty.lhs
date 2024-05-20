@@ -950,7 +950,7 @@ easy_display nl_text txt end doc
     lay _ _ = internalError "bad case in lay"
 
 indent :: Int -> String
-indent n | n >= 8 = '\t' : indent (n - 8)
+indent n | n >= 8 = "        " ++ indent (n - 8)
          | otherwise      = spaces n
 
 multi_ch :: Int -> Char -> String

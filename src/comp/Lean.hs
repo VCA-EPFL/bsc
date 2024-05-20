@@ -1,8 +1,8 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE PatternGuards #-}
-module SAL(
+module Lean(
     SContext,
-    convAPackageToSAL
+    convAPackageToLean
 ) where
 
 #if defined(__GLASGOW_HASKELL__) && (__GLASGOW_HASKELL__ >= 804)
@@ -30,6 +30,8 @@ import VModInfo(VArgInfo(..))
 import ASyntax
 import ASyntaxUtil
 import LambdaCalcUtil
+import Data.List
+import Data.Generics qualified as DataGenerics
 
 -- TODO:
 -- * filter out unused defs (such as arguments to foreign funcs/tasks)
@@ -39,15 +41,15 @@ import LambdaCalcUtil
 
 -- requires that task splicing has already happened
 --
-convAPackageToSAL :: ErrorHandle -> Flags -> APackage -> IO SContext
+convAPackageToLean :: ErrorHandle -> Flags -> APackage -> IO SContext
 
 -- avoid work if a dump wasn't requested
-convAPackageToSAL errh flags apkg | not (hasDumpStrict flags DFdumpSAL) =
+convAPackageToLean errh flags apkg | not (hasDumpStrict flags DFdumpLean) =
     let ctx_id = ctxId (apkg_name apkg)
     in  return (SContext ctx_id [] [])
 
 -- handle noinline functions separately
-convAPackageToSAL errh flags apkg0 | (apkg_is_wrapped apkg0) =
+convAPackageToLean errh flags apkg0 | (apkg_is_wrapped apkg0) =
     let
         -- update the types of the primitives
         apkg = lcAPackageProcess errh flags apkg0
@@ -83,7 +85,7 @@ convAPackageToSAL errh flags apkg0 | (apkg_is_wrapped apkg0) =
                   [SDValue noinlineId (funcType arg_types rt) $
                      sLam arg_infos body]
 
-            _ -> internalError ("convAPackageToSAL: noinline ifcs: " ++
+            _ -> internalError ("convAPackageToLean: noinline ifcs: " ++
                                 ppReadable ifcs)
 
         -- context Id
@@ -95,8 +97,8 @@ convAPackageToSAL errh flags apkg0 | (apkg_is_wrapped apkg0) =
         return $
         SContext ctx_id cs fn_defs
 
-convAPackageToSAL errh flags apkg0 =
-  case (chkAPackage "SAL" apkg0) of
+convAPackageToLean errh flags apkg0 =
+  case (chkAPackage "Lean" apkg0) of
    Just wmsgs -> do bsWarning errh wmsgs
                     let ctx_id = ctxId (apkg_name apkg0)
                     return (SContext ctx_id [] [])
@@ -141,9 +143,21 @@ convAPackageToSAL errh flags apkg0 =
         SContext ctx_id cs
             (state_defs ++
              ctor_defs ++
-             rule_defs ++
-             ifc_defs)
+             (map drop_rdy rule_defs) ++
+             -- TODO filter the RDY methods
+             (map drop_rdy $ filter_rdy ifc_defs))
 
+sid_isnot_rdy :: SId -> Bool
+sid_isnot_rdy (SId i) =
+   not $ "RDY" `isInfixOf` i
+
+filter_rdy :: [SDefn] -> [SDefn]
+filter_rdy = filter (\x -> 
+          case x of
+          SDComment a b ->  True
+          SDType x y -> True
+          SDValue id _ e -> sid_isnot_rdy id
+           ) 
 -- -------------------------
 
 -- This dump was created for use in the SRI Smten tool (previously SERI),
@@ -178,6 +192,7 @@ data SType = STVar SQId
            | STTuple [SType]
            | STFunc SType SType
            | STRecord [(SId, SType)]
+           | STK SType 
            -- | STState
            deriving (Eq, Show)
 
@@ -212,9 +227,15 @@ instance Hyper SContext where
 instance PPrint SContext where
   pPrint d p (SContext i cs ds) =
       ppComment cs $+$
-      (pPrint d 0 i <+> colon <+> text "CONTEXT" <+> equals) $+$
+      (text "namespace" <+> pPrint d 0 i) $+$
       -- for readability, put an empty line at the start and end
-      beginEnd (vsepEmptyLine ([empty] ++ map (pPrint d 0) ds ++ [empty]))
+      -- nest 2 (vsepEmptyLine (map (pPrint d 0) ds)) $+$
+
+      nest 2 (
+        (text "open" <+> pPrint d 0 i) $+$
+        vsepEmptyLine ([empty] ++ map (pPrint d 0) ds ++ [empty])) $+$
+      (text "end" <+> pPrint d 0 i)
+
 
 instance PPrint SId where
   pPrint d p (SId i) = text i
@@ -230,49 +251,55 @@ instance PPrint SQId where
                      ([], _)  -> lbrace <> es_doc <> rbrace
                      (_, [])  -> lbrace <> ts_doc <> rbrace
                      (_, _)   -> lbrace <> ts_doc <> semi <> es_doc <> rbrace
-      in  pPrint d 0 ctx <> ps_doc <> text "!" <> pPrint d 0 i
+      in  pPrint d 0 ctx <> text "." <> pPrint d 0 i
+
+
+
 
 instance PPrint SDefn where
+  pPrint :: PDetail -> Int -> SDefn -> Doc
   pPrint d p (SDComment cs ds) =
       ppComment cs $+$
       vsep (map (pPrint d 0) ds)
+  pPrint d p (SDType i t@(STRecord _ )) =
+    -- Probably does not handle type parameters yet...
+      sep [text "structure" <+> pPrint d 0 i <+> text "where", 
+           nest 2 (pPrint d 0 t)] $+$ empty $+$ text "mklenses" <+> pPrint d 0 i $+$ text "open StateModule.l"
   pPrint d p (SDType i t) =
-      sep [pPrint d 0 i <+> colon <+> text "TYPE" <+> equals,
-           nest 2 (pPrint d 0 t <+> semi)]
-  pPrint d p (SDValue i t e) = ppDef d (i, t, e) <+> semi
+      sep [text"def" <+> pPrint d 0 i <+> text ":=", 
+           nest 2 (pPrint d 0 t)] 
+  pPrint d p (SDValue i t e) = text "def" <+> ppDef True d (i, t, e)
 
 instance PPrint SType where
   pPrint :: PDetail -> Int -> SType -> Doc
   pPrint d p (STVar i) = pPrint d 0 i
   pPrint d p (STArray sz t) =
-      text "ARRAY" <+> ppArraySize sz <+> text "OF" <+> pPrint d 0 t
+      text "-- Unsupport ARRAY"
   pPrint d p (STTuple ts) =
-      lbrack <+> commaSep (map (pPrint d 0) ts) <+> rbrack
+      lparen <+> commaSep (map (pPrint d 0) ts) <+> rparen
   pPrint d p (STFunc t1 t2) =
-      lbrack <+> pPrint d 0 t1 <+> text "->" <+> pPrint d 0 t2 <+> rbrack
+      lparen <+> pPrint d 0 t1 <+> text "->" <+> pPrint d 0 t2 <+> rparen
+  pPrint d p (STK t1 ) =
+      text "kt" <+> pPrint d 0 t1
   pPrint d p (STRecord fs) =
       let fdocs = map (ppField d) fs
       in  case fdocs of
             [] -> internalError ("STRecord with no fields")
-            [d] -> lhbrack <+> d <+> rhbrack
-            _ -> let spcomma = text " ,"
-                     sprhbrack = text " #]"
-                 in  vcat $
-                       (zipWith (<+>) (lhbrack : repeat spcomma) fdocs) ++
-                       [sprhbrack]
+            [d] -> d 
+            _ -> vcat fdocs
 
 instance PPrint SExpr where
   pPrint d p (SLam as e) =
-      (text "LAMBDA" <+> ppVarDecls d as <+> colon) $+$
+      (text "fun" <+> ppVarDecls d as <+> text "=>") $+$
       pPrint d 0 e
   pPrint d p e@(SLet ds body) =
       let mkDefDocs [] = internalError ("empty SLet")
-          mkDefDocs [def] = [text "LET" <+> ppDef d def]
+          mkDefDocs [def] = [text "let" <+> ppDef False d def]
           mkDefDocs defs =
-              zipWith (<+>) (text "LET" : repeat (nest 2 comma)) (map (ppDef d) defs)
+              zipWith (<+>) (text "let" : repeat (nest 2 comma)) (map (ppDef False d) defs)
           recFn (SLet ds body) =
               case (recFn body) of
-                (doc:docs) -> (mkDefDocs ds) ++ ((text "IN" <+> doc):docs)
+                (doc:docs) -> (mkDefDocs ds) ++ (doc):docs
                 _ -> internalError ("pPrint SLet")
           recFn body = [pPrint d 0 body]
        in vsep (recFn e)
@@ -285,13 +312,13 @@ instance PPrint SExpr where
       pparen (p > 0) $ pPrint d 0 f <+> pPrint d 1 e
   -- print application to a tuple like a C-style function
   pPrint d p (SApply f (STuple es)) =
-      pPrint d 1 f <>
+      pPrint d 1 f <+>
       -- tuples are printed with space between the parentheses
       --pPrint d 0 a
-      lparen <> commaSep (map (pPrint d 0) es) <> rparen
+      foldr (<+>) empty (map (\ x -> lparen <> pPrint d 0 x <> rparen) es)
   -- print application to a single argument like a C-style function
   pPrint d p (SApply f a) =
-      pPrint d 1 f <> pparen True (pPrint d 0 a)
+      pPrint d 1 f <+> pparen True (pPrint d 0 a)
 {-
   pPrint d p (SApply f as) =
       pparen (p > 0) $
@@ -302,34 +329,37 @@ instance PPrint SExpr where
       pparen (p > 0) $
         pPrint d 1 a1 <+> pPrint d 0 op <+> pPrint d 1 a2
   pPrint d p (SArray i sz e) =
-      sep [lbrack <>
-             (lbrack <+> pPrint d 0 i <+> colon <+> ppArraySize sz <+> rbrack),
-           nest 2 $ pPrint d 0 e <+> rbrack]
+      text "(* UNSUPPORT ARRAY *)"
+      -- sep [lbrack <>
+      --        (lbrack <+> pPrint d 0 i <+> colon <+> ppArraySize sz <+> rbrack),
+      --      nest 2 $ pPrint d 0 e <+> rbrack]
   pPrint d p (SArrayUpd arr_e idx_e val_e) =
+      text "(* UNSUPPORT ARRAY *)"
       -- allow WITH to nest directly under the array expression,
       -- because we build arrays with many nested updates
-      sep [pPrint d 0 arr_e,
-           -- XXX if idx_e is big, we could nest val_e under it
-           text "WITH" <+> lbrack <> pPrint d 0 idx_e <> rbrack <+>
-               text ":=" <+> pPrint d 0 val_e]
+      -- sep [pPrint d 0 arr_e,
+      --      -- XXX if idx_e is big, we could nest val_e under it
+      --      text "WITH" <+> lbrack <> pPrint d 0 idx_e <> rbrack <+>
+      --          text ":=" <+> pPrint d 0 val_e]
   pPrint d p (SArraySel arr_e idx_e) =
-      cat [pPrint d 1 arr_e,
-           nest 2 $ lbrack <> pPrint d 0 idx_e <> rbrack]
+      text "(* UNSUPPORT ARRAY *)"
+      -- cat [pPrint d 1 arr_e,
+      --      nest 2 $ lbrack <> pPrint d 0 idx_e <> rbrack]
   pPrint d p (SStruct fs) =
       let fdocs = map (ppFieldDef d) fs
       in  case fdocs of
-            [] -> lhparen <+> rhparen
-            [d] -> lhparen <+> d <+> rhparen
+            [] -> lbrace <+> rbrace
+            [d] -> lbrace <+> d <+> rbrace
             _ -> let spcomma = text " ,"
-                     sprhparen = text " #)"
+                     sprhparen = rbrace
                  in  vcat $
-                       (zipWith (<+>) (lhparen : repeat spcomma) fdocs) ++
+                       (zipWith (<+>) (lbrace : repeat spcomma) fdocs) ++
                        [sprhparen]
   pPrint d p (SStructUpd se fi fe) =
-      pPrint d 1 se <+> text "WITH" <+>
-      text "." <> pPrint d 0 fi <+> text ":=" <+> pPrint d 0 fe
+      lhparen <+> pPrint d 1 se <+> text "with" <+>
+      pPrint d 0 fi <+> text ":=" <+> pPrint d 0 fe <+> rhparen
   pPrint d p (SStructSel se fi) =
-      pPrint d 1 se <> text "." <> pPrint d 0 fi
+      pPrint d 1 se <> text "⬝" <> pPrint d 0 fi
   pPrint d p (STuple es) =
       lparen <+> commaSep (map (pPrint d 0) es) <+> rparen
   pPrint d p (STupleUpd te fn fe) =
@@ -339,28 +369,29 @@ instance PPrint SExpr where
       pPrint d 1 te <> text "." <> pPrint d 0 fn
   pPrint d p (SIf c t f) =
       pparen (p > 0) $
-        sep [text "IF" <+> pPrint d 1 c,
-             nest 2 $ text "THEN" <+> pPrint d 0 t,
-             nest 2 $ text "ELSE" <+> pPrint d 0 f,
-             text "ENDIF"]
+        sep [text "(if" <+> pPrint d 1 c,
+             nest 2 $ text "then" <+> pPrint d 0 t,
+             nest 2 $ text "else" <+> pPrint d 0 f <> text ")"]
 
 
 -- return "empty" if there is no comment, which is the unit of $+$,
 -- so there is no extra line in the output when there are no comments
 ppComment :: [String] -> Doc
 ppComment cs =
-    let ppline str = text ("% " ++ str)
+    let ppline str = text ("-- " ++ str)
     in  foldr ($+$) empty (map ppline cs)
 
-ppDef :: PDetail -> (SId, SType, SExpr) -> Doc
-ppDef d (i, t, e) =
+ppDef :: Bool -> PDetail -> (SId, SType, SExpr) -> Doc
+ppDef global d (i, t, e) =
     let (as_doc, t', body) =
             case (e, t) of
               (SLam as body, STFunc _ rt) -> (ppVarDecls d as, rt, body)
               _ -> (empty, t, e)
     in  -- XXX do we want to allow putting the type on a new line?
-        sep [(pPrint d 0 i <+> as_doc <+> colon <+> pPrint d 0 t' <+> text "="),
-             nest 2 (pPrint d 0 body)]
+        let t = if global then empty <+> colon <+> pPrint d 0 t' else empty
+        in sep [(pPrint d 0 i <+> as_doc <> t <+> text ":="),
+            if global then text "⟪" else empty,
+            nest 2 (pPrint d 0 body <> if not global then semi else text "⟫")]
 
 ppField :: PDetail -> (SId, SType) -> Doc
 ppField d (i, t) = pPrint d 0 i <+> colon <+> pPrint d 0 t
@@ -369,14 +400,14 @@ ppFieldDef :: PDetail -> (SId, SExpr) -> Doc
 ppFieldDef d (i, e) = pPrint d 0 i <+> text ":=" <+> pPrint d 0 e
 
 ppVarDecls :: PDetail -> [(SId, SType)] -> Doc
-ppVarDecls d [] = internalError ("SAL.ppVarDecls empty")
+ppVarDecls d [] = internalError ("Lean.ppVarDecls empty")
 ppVarDecls d as =
     let as' = let getInfo its@((_,t):_) = (map fst its, t)
-                  getInfo _ = internalError "SAL.ppVarDecls getInfo"
+                  getInfo _ = internalError "Lean.ppVarDecls getInfo"
               in  map getInfo (groupBy eqSnd as)
         ppArg (is, t) =
-            commaSep (map (pPrint d 0) is) <+> colon <+> pPrint d 0 t
-    in  lparen <> commaSep (map ppArg as') <> rparen
+            lparen <> (sep (map (pPrint d 0) is)) <+> colon <+> pPrint d 0 t <> rparen
+    in  sep (map ppArg as')
 
 ppArraySize :: Integer -> Doc
 ppArraySize sz = lbrack <> text ("0.." ++ itos (sz-1)) <> rbrack
@@ -386,8 +417,8 @@ lhbrack = text "[#"
 rhbrack = text "#]"
 
 lhparen, rhparen :: Doc
-lhparen = text "(#"
-rhparen = text "#)"
+lhparen = text "<{"
+rhparen = text "}>"
 
 vsepEmptyLine :: [Doc] -> Doc
 vsepEmptyLine [] = empty
@@ -476,24 +507,24 @@ anyVar t@(ATAbstract {})   = internalError ("anyVar: " ++ ppReadable t)
 -- -----
 
 boolType :: SType
-boolType = sTVar (SId "BOOLEAN")
+boolType = sTVar (SId "Bool")
 
 falseCon :: SExpr
-falseCon = sVar (SId "FALSE")
+falseCon = sVar (SId "false")
 
 trueCon :: SExpr
-trueCon = sVar (SId "TRUE")
+trueCon = sVar (SId "true")
 
 -- -----
 
 voidCtx :: SId -> SQId
-voidCtx baseId = SQId (Just (SId "Unit", [], [])) baseId
+voidCtx baseId = SQId Nothing baseId
 
 voidType :: SType
-voidType = STVar (voidCtx (SId "T"))
+voidType = STVar (voidCtx (SId "Type"))
 
 voidCon :: SExpr
-voidCon = SVar (voidCtx (SId "unit"))
+voidCon = SVar (voidCtx (SId "Unit"))
 
 -- -----
 
@@ -501,7 +532,7 @@ bitCtx :: Integer -> SId -> SQId
 bitCtx sz baseId = SQId (Just (SId "Bit", [], [SIntLit sz])) baseId
 
 bitNType :: Integer -> SType
-bitNType n = STVar (bitCtx n (SId "T"))
+bitNType n = STVar (bitCtx n (SId "Nat"))
 
 {-
 bitUndet :: Integer -> SExpr
@@ -609,13 +640,13 @@ sIf pe te fe = SIf pe te fe
 
 
 andInfix :: SId
-andInfix = SId "AND"
+andInfix = SId "&&"
 
 orInfix :: SId
 orInfix = SId "||"
 
 notVar :: SExpr
-notVar = sVar (SId "NOT")
+notVar = sVar (SId "!")
 
 
 sBAnds :: [SExpr] -> SExpr
@@ -647,7 +678,7 @@ primId p = case (show p) of
 -- Context name: CTX_<modname>
 
 ctxId :: Id -> SId
-ctxId i = SId ("CTX_" ++ getIdBaseString i)
+ctxId i = SId (getIdBaseString i)
 
 qualSId :: Id -> [Integer] -> SId -> SQId
 qualSId modId ns baseId =
@@ -667,7 +698,7 @@ noinlineQId func = qualSId (mk_homeless_id func) [] $ noinlineId
 -- Module state types: CTX_<modName>!MOD
 
 modTypeId :: SId
-modTypeId = SId "STATE"
+modTypeId = SId "StateModule"
 
 modType :: SType
 modType = sTVar modTypeId
@@ -714,7 +745,7 @@ ruleId rId = SId ("rule_" ++ getIdBaseString rId)
 -- Rule type :: <state> -> (Bool, <state>)
 ruleType :: SType -> SType
 ruleType stateType =
-    funcType [stateType] (tupleType [boolType, stateType])
+    funcType [STK stateType] (STK stateType)
 
 -- -----
 -- Method function names: meth_<methname>
@@ -729,13 +760,13 @@ submodMethVar mod ns methId =
 -- Action method type :: {<arg> ->} <state> -> (<state>, <rettype>)
 actionMethType :: [SType] -> SType -> SType -> SType
 actionMethType argTypes stateType returnType =
-    funcType (argTypes ++ [stateType])
-             (tupleType [stateType, returnType])
+    funcType (map STK (argTypes ++ [stateType]))
+             (STK stateType)
 
 -- Value method type :: {<arg> ->} <state> -> <rettype>
 valueMethType :: [SType] -> SType -> SType -> SType
 valueMethType argTypes stateType returnType =
-    funcType (argTypes ++ [stateType]) returnType
+    funcType (map STK (argTypes ++ [stateType])) (STK returnType)
 
 -- Lambda-binding for method arguments: arg_<name>
 methArgId :: Id -> SId
@@ -842,13 +873,52 @@ makeModCtorDecl defmap inps avis =
 
 -- -------------------------
 
+
+deriving instance DataGenerics.Data SId
+deriving instance DataGenerics.Data SQId
+deriving instance DataGenerics.Data SExpr
+deriving instance DataGenerics.Data SType
+deriving instance DataGenerics.Data SDefn
+
+-- This is not sufficient
+collectContainsRdy :: SExpr -> Bool
+collectContainsRdy = DataGenerics.everything
+    (||)
+    (DataGenerics.mkQ False test)
+    --No need to do CDefT as we are pretypechecking?
+    where
+        -- test cdef@( SLet [SApply (SVar var@(SQId (Just (mod, tparam, params)) met)) rhs) = 
+        test id@(SId e) = 
+          not (sid_isnot_rdy id)
+        -- test _ = False
+
+-- This is not sufficient
+drop_rdy :: SDefn -> SDefn 
+drop_rdy x = DataGenerics.everywhere (DataGenerics.mkT rm_empty) $ DataGenerics.everywhere (DataGenerics.mkT test) x
+    --No need to do CDefT as we are pretypechecking?
+    where
+        -- test cdef@(SLet [SApply (SVar var@(SQId (Just (mod, tparam, params)) met)) rhs) = 
+        test (((sId :: SId, sType :: SType, sExpr :: SExpr)):q) =
+          if sid_isnot_rdy sId && not (collectContainsRdy sExpr) 
+            then (sId,sType,sExpr):(test q)
+            else test q
+        test ([]) =
+          []
+        rm_empty (SLet [] e) =
+          e
+        rm_empty id =
+          id
+        --   -- Filter any of the l that either use a RDY, or is itself a RDY 
+        --   e
+        -- test x = x
+
 convARule :: DefMap -> InstMap -> MethodOrderMap -> ARule -> SDefn
 convARule defmap instmap mmap r@(ARule rId _ _ _ p as _ _) =
   let
       body = runCM defmap instmap S.empty $ convRuleActions mmap p as
   in
       SDValue (ruleId rId) (ruleType modType) $
-        sLam [(stateId, modType)] $
+        sLam [(stateId, STK $ modType)] $
           body
 
 -- -------------------------
@@ -861,7 +931,7 @@ convAIFace defmap instmap mmap
       rt = convAType ret_t
 
       argset = S.fromList (map fst args)
-      arg_infos = map (\(i,t) -> (methArgId i, convAType t)) args
+      arg_infos = map (\(i,t) -> (methArgId i, STK $ convAType t)) args
       arg_types = map snd arg_infos
 
       -- get all the defs used by the return value
@@ -873,7 +943,7 @@ convAIFace defmap instmap mmap
                  return $ sLet ds ret_expr
   in
       [SDValue (modMethId methId) (valueMethType arg_types modType rt) $
-         sLam (arg_infos ++ [(stateId, modType)]) $
+         sLam (arg_infos ++ [(stateId, STK $ modType)]) $
            body]
 
 convAIFace defmap instmap mmap
@@ -881,14 +951,14 @@ convAIFace defmap instmap mmap
   let
       -- arguments are Bit type
       argset = S.fromList (map fst args)
-      arg_infos = map (\(i,t) -> (methArgId i, convAType t)) args
+      arg_infos = map (\(i,t) -> (methArgId i, STK $ convAType t)) args
       arg_types = map snd arg_infos
 
       body = runCM defmap instmap argset $
                convAIFaceBody mmap methId rs Nothing
   in
       [SDValue (modMethId methId) (actionMethType arg_types modType voidType) $
-         sLam (arg_infos ++ [(stateId, modType)]) $
+         sLam (arg_infos ++ [(stateId, STK modType)]) $
            body]
 
 convAIFace defmap instmap mmap
@@ -899,14 +969,14 @@ convAIFace defmap instmap mmap
 
       -- arguments are Bit type
       argset = S.fromList (map fst args)
-      arg_infos = map (\(i,t) -> (methArgId i, convAType t)) args
+      arg_infos = map (\(i,t) -> (methArgId i, STK $ convAType t)) args
       arg_types = map snd arg_infos
 
       body = runCM defmap instmap argset $
                convAIFaceBody mmap methId rs (Just def_e)
   in
       [SDValue (modMethId methId) (actionMethType arg_types modType ret_ty) $
-         sLam (arg_infos ++ [(stateId, modType)]) $
+         sLam (arg_infos ++ [(stateId, STK modType)]) $
            body]
 
 -- ignore clocks, resets, inouts
@@ -1060,12 +1130,12 @@ convActions isRule predefined_defs mmap p as m_ret = do
 
   -- OK to convert the return expression here, because any state
   -- references should have been lifted to their own defs
-  ret_expr <- case m_ret of
-                Nothing -> return voidCon
-                Just ret -> convAExpr ret
+  -- ret_expr <- case m_ret of
+  --               Nothing -> return voidCon
+  --               Just ret -> convAExpr ret
   let ret_tup = if isRule
-                then STuple [p_expr, state_expr]
-                else STuple [state_expr, ret_expr]
+                then state_expr
+                else state_expr
 
   return $ sLet let_defs ret_tup
 
@@ -1129,14 +1199,14 @@ convStmt avmap (AStmtAction cset (ACall obj meth as)) = do
   -- the method call
   let act_id = SId ("act" ++ itos n)
       act_expr = sApply fnvar (a_exprs ++ [submod_state])
-      act_def = (act_id, tupleType [submod_type, av_type], act_expr)
+      act_def = (act_id, submod_type, act_expr)
 
   -- the resulting state
   let state_id = SId ("state" ++ itos n)
       -- don't apply the method if the condition is not True
       state_expr = sIf c_expr
                      (SStructUpd prev_state instname
-                          (STupleSel (sVar act_id) 1))
+                          (sVar act_id))
                      prev_state
       state_def = (state_id, modType, state_expr)
 
@@ -1150,6 +1220,7 @@ convStmt avmap (AStmtAction cset (ACall obj meth as)) = do
   -- reset the state
   setState (sVar state_id)
 
+  -- av_defs is always void in this fragment
   return $ (act_def:state_def:av_defs)
 
 convStmt _ (AStmtAction cset (AFCall i f isC as isAssumpCheck)) = do

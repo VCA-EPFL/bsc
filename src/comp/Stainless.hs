@@ -1,8 +1,8 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE PatternGuards #-}
-module SAL(
+module Stainless(
     SContext,
-    convAPackageToSAL
+    convAPackageToStainless
 ) where
 
 #if defined(__GLASGOW_HASKELL__) && (__GLASGOW_HASKELL__ >= 804)
@@ -39,15 +39,15 @@ import LambdaCalcUtil
 
 -- requires that task splicing has already happened
 --
-convAPackageToSAL :: ErrorHandle -> Flags -> APackage -> IO SContext
+convAPackageToStainless :: ErrorHandle -> Flags -> APackage -> IO SContext
 
 -- avoid work if a dump wasn't requested
-convAPackageToSAL errh flags apkg | not (hasDumpStrict flags DFdumpSAL) =
+convAPackageToStainless errh flags apkg | not (hasDumpStrict flags DFdumpSAL) =
     let ctx_id = ctxId (apkg_name apkg)
     in  return (SContext ctx_id [] [])
 
 -- handle noinline functions separately
-convAPackageToSAL errh flags apkg0 | (apkg_is_wrapped apkg0) =
+convAPackageToStainless errh flags apkg0 | (apkg_is_wrapped apkg0) =
     let
         -- update the types of the primitives
         apkg = lcAPackageProcess errh flags apkg0
@@ -83,7 +83,7 @@ convAPackageToSAL errh flags apkg0 | (apkg_is_wrapped apkg0) =
                   [SDValue noinlineId (funcType arg_types rt) $
                      sLam arg_infos body]
 
-            _ -> internalError ("convAPackageToSAL: noinline ifcs: " ++
+            _ -> internalError ("convAPackageToStainless: noinline ifcs: " ++
                                 ppReadable ifcs)
 
         -- context Id
@@ -95,7 +95,7 @@ convAPackageToSAL errh flags apkg0 | (apkg_is_wrapped apkg0) =
         return $
         SContext ctx_id cs fn_defs
 
-convAPackageToSAL errh flags apkg0 =
+convAPackageToStainless errh flags apkg0 =
   case (chkAPackage "SAL" apkg0) of
    Just wmsgs -> do bsWarning errh wmsgs
                     let ctx_id = ctxId (apkg_name apkg0)

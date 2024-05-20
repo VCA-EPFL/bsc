@@ -229,6 +229,9 @@ data DumpFlag
         | DFATSexpand
         | DFdumpLambdaCalculus
         | DFdumpSAL
+        | DFdumpCoq
+        | DFdumpStainless
+        | DFdumpLean
         | DFATSperfspec
         | DFATSsplice
         | DFATSclean

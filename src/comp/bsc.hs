@@ -164,6 +164,9 @@ import InlineWires(aInlineWires)
 import InlineCReg(aInlineCReg)
 import LambdaCalc(convAPackageToLambdaCalc)
 import SAL(convAPackageToSAL)
+import Coq(convAPackageToCoq)
+import Stainless(convAPackageToStainless)
+import Lean(convAPackageToLean)
 
 import VVerilogDollar
 import ISplitIf(iSplitIf)
@@ -955,6 +958,17 @@ genModule
     sal_ctx <- convAPackageToSAL errh flags amod_clean
     t <- dump errh flags t DFdumpSAL dumpnames sal_ctx
 
+    start flags DFdumpCoq
+    sal_ctx <- convAPackageToCoq errh flags amod_clean
+    t <- dump errh flags t DFdumpCoq dumpnames sal_ctx
+
+    start flags DFdumpStainless
+    sal_ctx <- convAPackageToStainless errh flags amod_clean
+    t <- dump errh flags t DFdumpStainless dumpnames sal_ctx
+
+    start flags DFdumpLean
+    sal_ctx <- convAPackageToLean errh flags amod_clean
+    t <- dump errh flags t DFdumpLean dumpnames sal_ctx
     -- Build path graph for everything except rules
     start flags DFpathsPreSched
     (pathGraphInfo, urgency_pairs) <- aPathsPreSched errh flags amod_clean
