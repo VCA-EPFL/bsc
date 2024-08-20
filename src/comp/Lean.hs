@@ -13,7 +13,7 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import Control.Monad(foldM)
 import Control.Monad.State(State, runState, gets, get, put)
-import Data.Maybe(mapMaybe)
+import Data.Maybe(mapMaybe, fromJust)
 import Data.Char(toLower)
 import Data.List(intersperse, groupBy)
 
@@ -143,9 +143,17 @@ convAPackageToLean errh flags apkg0 =
         SContext ctx_id cs
             (state_defs ++
              ctor_defs ++
-             (map drop_rdy rule_defs) ++
+             rule_defs ++
+            --  map drop_rdy rule_defs ++
              -- TODO filter the RDY methods
-             (map drop_rdy $ filter_rdy ifc_defs))
+             (\(x,y) -> y ++ x) 
+              (partition (\x -> 
+                              case x of
+                              SDComment a b ->  True
+                              SDType x y -> True
+                              SDValue id _ e -> sid_isnot_rdy id
+                              ) ifc_defs)
+             )
 
 sid_isnot_rdy :: SId -> Bool
 sid_isnot_rdy (SId i) =
@@ -199,6 +207,7 @@ data SType = STVar SQId
 data SExpr = SLam [(SId, SType)] SExpr
            | SLet [(SId, SType, SExpr)] SExpr
            | SVar SQId
+          --  | SGuard SExpr SExpr 
            | SIntLit Integer
            | SRealLit Double
            | SApply SExpr SExpr
@@ -244,14 +253,14 @@ instance PPrint SQId where
   pPrint d p (SQId Nothing i) = pPrint d 0 i
   pPrint d p (SQId (Just (ctx, ts, es)) i) =
       let -- don't add spaces, so that it reads as a unit
-          ts_doc = hcat $ intersperse comma $ map (pPrint d 0) ts
-          es_doc = hcat $ intersperse comma $ map (pPrint d 0) es
+          ts_doc = hcat $ intersperse space $ map (pPrint d 0) ts
+          es_doc = hcat $ intersperse space $ map (pPrint d 0) es
           ps_doc = case (ts, es) of
                      ([], []) -> empty
-                     ([], _)  -> lbrace <> es_doc <> rbrace
-                     (_, [])  -> lbrace <> ts_doc <> rbrace
-                     (_, _)   -> lbrace <> ts_doc <> semi <> es_doc <> rbrace
-      in  pPrint d 0 ctx <> text "." <> pPrint d 0 i
+                     ([], _)  -> es_doc
+                     (_, [])  -> ts_doc
+                     (_, _)   -> ts_doc <+> es_doc 
+      in  pPrint d 0 ctx <>  text "." <> pPrint d 0 i <+> ps_doc 
 
 
 
@@ -268,7 +277,12 @@ instance PPrint SDefn where
   pPrint d p (SDType i t) =
       sep [text"def" <+> pPrint d 0 i <+> text ":=", 
            nest 2 (pPrint d 0 t)] 
-  pPrint d p (SDValue i t e) = text "def" <+> ppDef True d (i, t, e)
+  pPrint d p (SDValue i t e) = text "@[simp]" $+$ text "def" <+> ppDef True d (i, t, e)
+
+timesSep :: [Doc] -> Doc
+timesSep [] = empty
+timesSep ds = sep ([x <> text "×" | x <- init ds] ++ [last ds])
+
 
 instance PPrint SType where
   pPrint :: PDetail -> Int -> SType -> Doc
@@ -276,11 +290,11 @@ instance PPrint SType where
   pPrint d p (STArray sz t) =
       text "-- Unsupport ARRAY"
   pPrint d p (STTuple ts) =
-      lparen <+> commaSep (map (pPrint d 0) ts) <+> rparen
+      lparen <+> timesSep (map (pPrint d 0) ts) <+> rparen
   pPrint d p (STFunc t1 t2) =
       lparen <+> pPrint d 0 t1 <+> text "->" <+> pPrint d 0 t2 <+> rparen
-  pPrint d p (STK t1 ) =
-      text "kt" <+> pPrint d 0 t1
+  pPrint d p (STK t1) =
+      pPrint d 0 t1
   pPrint d p (STRecord fs) =
       let fdocs = map (ppField d) fs
       in  case fdocs of
@@ -289,6 +303,8 @@ instance PPrint SType where
             _ -> vcat fdocs
 
 instance PPrint SExpr where
+  -- pPrint d p (SGuard e1 e2) =
+      -- text "withGuard (" <+> pPrint d p e1 <> text ")" <+> text "{"<+> pPrint d p e2 <+> text "}"
   pPrint d p (SLam as e) =
       (text "fun" <+> ppVarDecls d as <+> text "=>") $+$
       pPrint d 0 e
@@ -359,11 +375,11 @@ instance PPrint SExpr where
       lhparen <+> pPrint d 1 se <+> text "with" <+>
       pPrint d 0 fi <+> text ":=" <+> pPrint d 0 fe <+> rhparen
   pPrint d p (SStructSel se fi) =
-      pPrint d 1 se <> text "⬝" <> pPrint d 0 fi
+      pPrint d 1 se <> text "." <> pPrint d 0 fi
   pPrint d p (STuple es) =
       lparen <+> commaSep (map (pPrint d 0) es) <+> rparen
   pPrint d p (STupleUpd te fn fe) =
-      pPrint d 1 te <+> text "WITH" <+>
+      pPrint d 1 te <+> text "with" <+>
       text "." <> pPrint d 0 fn <+> text ":=" <+> pPrint d 0 fe
   pPrint d p (STupleSel te fn) =
       pPrint d 1 te <> text "." <> pPrint d 0 fn
@@ -390,8 +406,7 @@ ppDef global d (i, t, e) =
     in  -- XXX do we want to allow putting the type on a new line?
         let t = if global then empty <+> colon <+> pPrint d 0 t' else empty
         in sep [(pPrint d 0 i <+> as_doc <> t <+> text ":="),
-            if global then text "⟪" else empty,
-            nest 2 (pPrint d 0 body <> if not global then semi else text "⟫")]
+            nest 2 (pPrint d 0 body)]
 
 ppField :: PDetail -> (SId, SType) -> Doc
 ppField d (i, t) = pPrint d 0 i <+> colon <+> pPrint d 0 t
@@ -529,10 +544,12 @@ voidCon = SVar (voidCtx (SId "Unit"))
 -- -----
 
 bitCtx :: Integer -> SId -> SQId
-bitCtx sz baseId = SQId (Just (SId "Bit", [], [SIntLit sz])) baseId
+bitCtx sz baseId = SQId (Just (SId "BitVec", [], [SIntLit sz])) baseId
+-- bitCtx sz baseId = SQId Nothing baseId
 
 bitNType :: Integer -> SType
-bitNType n = STVar (bitCtx n (SId "Nat"))
+bitNType n = STVar (SQId Nothing (SId $ "(BitVec " ++ show n ++ ")"))
+-- (bitCtx n (SId "B"))
 
 {-
 bitUndet :: Integer -> SExpr
@@ -540,7 +557,7 @@ bitUndet sz = SVar $ bitCtx sz (SId "mkUndet")
 -}
 
 bitConst :: Integer -> Integer -> SExpr
-bitConst sz n = SApply (SVar (bitCtx sz (SId "mkConst"))) (SIntLit n)
+bitConst sz n = SApply (SVar (SQId (Just (SId "Bit", [], [SIntLit sz])) (SId "mkConst"))) (SIntLit n)
 
 -- -----
 
@@ -745,7 +762,7 @@ ruleId rId = SId ("rule_" ++ getIdBaseString rId)
 -- Rule type :: <state> -> (Bool, <state>)
 ruleType :: SType -> SType
 ruleType stateType =
-    funcType [STK stateType] (STK stateType)
+    funcType [STK stateType] (tupleType [boolType, stateType])
 
 -- -----
 -- Method function names: meth_<methname>
@@ -837,7 +854,7 @@ makeModCtorDecl defmap inps avis =
         inp_types = map snd3 inp_infos
         ctor_args = map fst2of3 inp_infos
 
-        ctor_type = funcType inp_types modType
+        ctor_type = funcType (map STK inp_types) (STK modType)
 
         mkInputField (a, _, f) = (f, sVar a)
 
@@ -892,6 +909,12 @@ collectContainsRdy = DataGenerics.everything
           not (sid_isnot_rdy id)
         -- test _ = False
 
+sqid_is_rdymet :: SQId -> Bool
+sqid_is_rdymet (SQId (Just (SId ctx, ts, es)) (SId i)) =
+  "RDY" `isInfixOf` i
+sqid_is_rdymet _ =
+  False
+
 -- This is not sufficient
 drop_rdy :: SDefn -> SDefn 
 drop_rdy x = DataGenerics.everywhere (DataGenerics.mkT rm_empty) $ DataGenerics.everywhere (DataGenerics.mkT test) x
@@ -899,9 +922,13 @@ drop_rdy x = DataGenerics.everywhere (DataGenerics.mkT rm_empty) $ DataGenerics.
     where
         -- test cdef@(SLet [SApply (SVar var@(SQId (Just (mod, tparam, params)) met)) rhs) = 
         test (((sId :: SId, sType :: SType, sExpr :: SExpr)):q) =
-          if sid_isnot_rdy sId && not (collectContainsRdy sExpr) 
-            then (sId,sType,sExpr):(test q)
-            else test q
+          -- if sid_isnot_rdy sId && not (collectContainsRdy sExpr) 
+          case sExpr of 
+            SApply (SVar var@(SQId (Just (mod, tparam, params)) met)) rhs -> 
+              if sqid_is_rdymet var  
+              then (sId, sType, trueCon):(test q) 
+              else  (sId, sType, sExpr):(test q)
+            _ -> (sId, sType, sExpr):(test q)
         test ([]) =
           []
         rm_empty (SLet [] e) =
@@ -1005,6 +1032,9 @@ convAIFaceBody mmap methId rs m_ret = do
       foldFn accum r = do
         (p_expr, r_upd) <- convRule r
         return $ sIf p_expr r_upd accum
+  let
+    rdy_met = SId . ("meth_RDY_" ++ )  $ getIdBaseString methId
+
 
   -- XXX When there are split rules, the return value is duplicated.
   -- XXX We can lift the return value out, and exclude its uses from
@@ -1021,7 +1051,8 @@ convAIFaceBody mmap methId rs m_ret = do
       -- so the final branch is a null update
       null_upd <- convMethActions (M.keys pred_uses) mmap [] m_ret
       rs_expr <- foldM foldFn null_upd (reverse rs)
-      return $ sLet ds rs_expr
+      -- return . sLet ds $ SGuard (SApply (SVar $ SQId Nothing rdy_met)  (SVar $ SQId Nothing stateId)) rs_expr
+      return . sLet ds $ rs_expr
 
 -- -------------------------
 
@@ -1133,8 +1164,12 @@ convActions isRule predefined_defs mmap p as m_ret = do
   -- ret_expr <- case m_ret of
   --               Nothing -> return voidCon
   --               Just ret -> convAExpr ret
+  -- let ret_tup = if isRule
+  --               then (p_expr, state_expr)
+  --               else state_expr
+  
   let ret_tup = if isRule
-                then state_expr
+                then STuple [p_expr, state_expr]
                 else state_expr
 
   return $ sLet let_defs ret_tup
@@ -1421,9 +1456,9 @@ convAPrim p@(PrimConcat) t as@(_:_) = do
            sApply (SVar (prim2Ctx sz1 sz2 (primId p))) [a1, a2])
   return $ snd $ foldr1 foldFn a_exprs
 
-convAPrim p@(PrimExtract) (ATBit sz2) [a, _, _] = do
-  a_expr <- convAExpr a
-  return $ sApply (SVar (prim2Ctx (aSize a) sz2 (primId p))) [a_expr]
+convAPrim p@(PrimExtract) (ATBit sz2) as = do
+  a_exprs <- mapM convAExpr as
+  return $ sApply (SVar (prim2Ctx (aSize $ head as) sz2 (primId p))) a_exprs
 
 -- converted to PrimSelect in IConv
 --convAPrim PrimSplit t as =
