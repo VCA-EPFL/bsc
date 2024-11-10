@@ -164,6 +164,7 @@ import InlineWires(aInlineWires)
 import InlineCReg(aInlineCReg)
 import LambdaCalc(convAPackageToLambdaCalc)
 import SAL(convAPackageToSAL)
+import AnalysisFjfj qualified as AnalysisFjfj
 import Coq(convAPackageToCoq)
 import Stainless(convAPackageToStainless)
 import Lean(convAPackageToLean)
@@ -957,6 +958,9 @@ genModule
     start flags DFdumpSAL
     sal_ctx <- convAPackageToSAL errh flags amod_clean
     t <- dump errh flags t DFdumpSAL dumpnames sal_ctx
+
+    sal_ctx <- AnalysisFjfj.convAPackageToSAL errh flags amod_clean
+    t <- dump errh flags t DFdumpFjfj dumpnames sal_ctx
 
     start flags DFdumpCoq
     sal_ctx <- convAPackageToCoq errh flags amod_clean
