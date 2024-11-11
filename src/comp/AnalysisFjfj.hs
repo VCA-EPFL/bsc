@@ -33,6 +33,8 @@ import LambdaCalcUtil
 import Data.Generics qualified as DataGenerics
 import Data.List
 import Data.Maybe qualified as Maybe
+import Data.List (groupBy, sortBy)
+import Data.Function (on)
 
 -- TODO:
 -- * filter out unused defs (such as arguments to foreign funcs/tasks)
@@ -96,7 +98,7 @@ convAPackageToSAL errh flags apkg0 | (apkg_is_wrapped apkg0) =
         cs = []
     in
         return $
-        SContext ctx_id cs fn_defs
+        SContext ctx_id cs []
 
 convAPackageToSAL errh flags apkg0 =
   case (chkAPackage "SAL" apkg0) of
@@ -139,18 +141,20 @@ convAPackageToSAL errh flags apkg0 =
 
         -- context comments
         cs = []
-        extractRules = map (\x -> 
-              let res = map snd $ actionMethodCalled x
-              in 
-                (if (res == nub res) then Maybe.Nothing else Maybe.Just res)) rule_defs
-        extractMethods =  map (\x -> 
-              let res = map snd $ actionMethodCalled x
-              in 
-                (if (res == nub res) then Maybe.Nothing else Maybe.Just res)) ifc_defs
+        extractRules = Maybe.mapMaybe (\x -> 
+          let y = groupPairs $ actionMethodCalled x in
+          case x of 
+            SDValue n _ _ -> if y /= [] then Just (show n, y) else Nothing 
+            _ -> if y /= [] then Just ("unexpected", groupPairs $ actionMethodCalled x) else Nothing) rule_defs
+        extractMethods = Maybe.mapMaybe (\x -> 
+          let y = groupPairs $ actionMethodCalled x in
+          case x of 
+            SDValue n _ _ -> if y /= [] then Just (show n, y) else Nothing 
+            _ -> if y /= [] then Just ("unexpected", groupPairs $ actionMethodCalled x) else Nothing) ifc_defs
     in
         return $
         SContext ctx_id cs
-            ([SDComment [show extractMethods ++ show extractRules] []])
+            ([SDComment [show ctx_id ++ ": " ++ show extractMethods ++ show extractRules] []])
 
 -- -------------------------
 
@@ -1423,6 +1427,7 @@ convUse (i, (t, e)) = do
 -- -------------------------
 
 deriving instance DataGenerics.Data SId
+deriving instance Ord SId
 deriving instance DataGenerics.Data SQId
 deriving instance DataGenerics.Data SExpr
 deriving instance DataGenerics.Data SType
@@ -1450,6 +1455,13 @@ extractMeth = DataGenerics.everything
       if "meth_" `isInfixOf` meth_id then [SId meth_id]
       else []
     test _ = []
+
+groupPairs :: [(SId, SId)] -> [(SId, [SId])]
+groupPairs pairs = 
+    let sorted = sortBy (compare `on` snd) pairs
+        grouped = groupBy ((==) `on` snd) sorted
+        processed = [(snd $ head g, map fst g) | g <- grouped, length g > 1]
+    in processed
 
 -- Extract the instance 
 actionMethodCalled :: SDefn -> [(SId, SId)]
