@@ -141,6 +141,8 @@ convAPackageToSAL errh flags apkg0 =
 
         -- context comments
         cs = []
+        nRules = length rule_defs
+        nMethods = length ifc_defs
         extractRules = Maybe.mapMaybe (\x -> 
           let y = groupPairs $ actionMethodCalled x in
           case x of 
@@ -154,7 +156,7 @@ convAPackageToSAL errh flags apkg0 =
     in
         return $
         SContext ctx_id cs
-            ([SDComment [show ctx_id ++ ": " ++ show extractMethods ++ show extractRules] []])
+            ([SDComment ["FJFJANALYSIS: " ++ show ctx_id ++ " " ++ (show nMethods) ++ " " ++(show nRules) ++ " " ++ show (length extractMethods) ++ " " ++ show (length extractRules) ++": " ++ show extractMethods ++ show extractRules] []])
 
 -- -------------------------
 
